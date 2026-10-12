@@ -48,6 +48,31 @@ const maxResumes = 256
 // resend.
 var continuationRetry = &genai.HTTPRetryOptions{Attempts: genai.Ptr[int32](8)}
 
+// turnOffAutomaticContinuation sets the AutomaticContinuation field of config,
+// a copy made for one request, to false, even when the caller set it to true.
+// genai releases after v1.73.0 add the field and, unless it is false, resume a
+// CONTINUATION pause inside Models.GenerateContent and GenerateContentStream,
+// resending the original contents with no bound on resumes and no stop on a
+// repeated token, so the continuation in this package would never run. The
+// field is set by name because the genai release this module requires does not
+// have it, while an application may build with one that does. ADK Java and ADK
+// Kotlin also turn it off.
+//
+// TODO(baptmont): set the field directly once go.mod requires a genai release
+// that has it.
+func turnOffAutomaticContinuation(config *genai.GenerateContentConfig) {
+	setFalse(config, "AutomaticContinuation")
+}
+
+// setFalse sets the *bool field called name of the struct p points to to
+// false, and does nothing when the struct has no such field.
+func setFalse(p any, name string) {
+	field := reflect.ValueOf(p).Elem().FieldByName(name)
+	if field.IsValid() && field.Type() == reflect.TypeFor[*bool]() {
+		field.Set(reflect.ValueOf(new(bool)))
+	}
+}
+
 // continuationToken returns the token that resumes resp, or nil if resp did
 // not pause or carries no token.
 func continuationToken(resp *genai.GenerateContentResponse) []byte {
