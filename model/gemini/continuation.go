@@ -65,7 +65,9 @@ func turnOffAutomaticContinuation(config *genai.GenerateContentConfig) {
 }
 
 // setFalse sets the *bool field called name of the struct p points to to
-// false, and does nothing when the struct has no such field.
+// false, and does nothing when the struct has no such field. It sets a new
+// pointer rather than writing through the existing one, which a shallow copy
+// of the caller's config shares.
 func setFalse(p any, name string) {
 	field := reflect.ValueOf(p).Elem().FieldByName(name)
 	if field.IsValid() && field.Type() == reflect.TypeFor[*bool]() {

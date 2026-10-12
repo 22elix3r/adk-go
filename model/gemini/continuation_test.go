@@ -1056,6 +1056,14 @@ func TestSetFalse(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("existing pointer not written through", func(t *testing.T) {
+		callers := genai.Ptr(true)
+		setFalse(&withField{AutomaticContinuation: callers}, "AutomaticContinuation")
+		if !*callers {
+			t.Error("setFalse wrote false through the existing pointer, which a shallow copy shares with the caller's config")
+		}
+	})
 }
 
 func TestTurnOffAutomaticContinuation(t *testing.T) {
