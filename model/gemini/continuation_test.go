@@ -1050,7 +1050,7 @@ func TestSetFalse(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setFalse(tt.got, "AutomaticContinuation")
+			setFalse(tt.got, automaticContinuationField)
 			if diff := cmp.Diff(tt.want, tt.got); diff != "" {
 				t.Errorf("setFalse() mismatch (-want +got):\n%s", diff)
 			}
@@ -1059,7 +1059,7 @@ func TestSetFalse(t *testing.T) {
 
 	t.Run("existing pointer not written through", func(t *testing.T) {
 		callers := genai.Ptr(true)
-		setFalse(&withField{AutomaticContinuation: callers}, "AutomaticContinuation")
+		setFalse(&withField{AutomaticContinuation: callers}, automaticContinuationField)
 		if !*callers {
 			t.Error("setFalse wrote false through the existing pointer, which a shallow copy shares with the caller's config")
 		}

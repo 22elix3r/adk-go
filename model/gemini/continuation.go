@@ -61,8 +61,12 @@ var continuationRetry = &genai.HTTPRetryOptions{Attempts: genai.Ptr[int32](8)}
 // TODO(baptmont): set the field directly once go.mod requires a genai release
 // that has it.
 func turnOffAutomaticContinuation(config *genai.GenerateContentConfig) {
-	setFalse(config, "AutomaticContinuation")
+	setFalse(config, automaticContinuationField)
 }
+
+// automaticContinuationField is the name of the GenerateContentConfig field
+// that turns off the SDK's continuation.
+const automaticContinuationField = "AutomaticContinuation"
 
 // setFalse sets the *bool field called name of the struct p points to to
 // false, and does nothing when the struct has no such field. It sets a new
