@@ -292,8 +292,11 @@ func TestContinuation_Generate(t *testing.T) {
 			wantOutputSoFar: []string{"", "one "},
 		},
 		{
-			name:    "MAX_TOKENS with a token not resumed",
-			byToken: map[string][]map[string]any{"": {candidate("one ", "MAX_TOKENS", "t1")}},
+			name: "MAX_TOKENS with a token not resumed",
+			byToken: map[string][]map[string]any{
+				"":   {candidate("one ", "MAX_TOKENS", "t1")},
+				"t1": {candidate("two", "STOP", "")},
+			},
 			want: &model.LLMResponse{
 				Content:       &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "one "}}},
 				FinishReason:  genai.FinishReasonMaxTokens,
@@ -377,7 +380,8 @@ func TestContinuation_GenerateStream(t *testing.T) {
 // stop with a token is returned as it is, as the unary one is.
 func TestContinuation_GenerateStreamMaxTokens(t *testing.T) {
 	api := &fakeContinuationAPI{byToken: map[string][]map[string]any{
-		"": {candidate("one ", "", ""), candidate("two", "MAX_TOKENS", "t1")},
+		"":   {candidate("one ", "", ""), candidate("two", "MAX_TOKENS", "t1")},
+		"t1": {candidate("three", "STOP", "")},
 	}}
 	var final *model.LLMResponse
 	for resp, err := range newContinuationModel(t, api).GenerateContent(t.Context(), continuationRequest(), true) {
