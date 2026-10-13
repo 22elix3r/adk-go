@@ -274,3 +274,26 @@ func TestContinuation_GenerateStreamResumedBySDK(t *testing.T) {
 	}
 	checkRequests(t, api, []string{"", "t1"})
 }
+
+// TestContinuation_AutomaticContinuationOff checks that a request that turns
+// off automatic continuation reaches the SDK with it off, so a pause comes
+// back as it is.
+func TestContinuation_AutomaticContinuationOff(t *testing.T) {
+	api := &fakeContinuationAPI{byToken: map[string][]map[string]any{
+		"":   {candidate("one ", "CONTINUATION", "t1")},
+		"t1": {candidate("two", "STOP", "")},
+	}}
+	req := continuationRequest()
+	req.Config = &genai.GenerateContentConfig{AutomaticContinuation: genai.Ptr(false)}
+	var got *model.LLMResponse
+	for resp, err := range newContinuationModel(t, api).GenerateContent(t.Context(), req, false) {
+		if err != nil {
+			t.Fatalf("GenerateContent: %v", err)
+		}
+		got = resp
+	}
+	if got.FinishReason != genai.FinishReasonContinuation {
+		t.Errorf("finish reason = %q, want %q", got.FinishReason, genai.FinishReasonContinuation)
+	}
+	checkRequests(t, api, []string{""})
+}
