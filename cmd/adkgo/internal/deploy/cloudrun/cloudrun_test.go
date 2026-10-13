@@ -196,6 +196,10 @@ func TestComputeFlags_RejectionLeavesNoTempDir(t *testing.T) {
 			setValidTriggerOIDCPairs(f)
 			f.cloudRun.eventarc = false
 		}},
+		"oidc value that is a flag": {"main.go", "http://127.0.0.1:8081", func(f *deployCloudRunFlags) {
+			setValidTriggerOIDCPairs(f)
+			f.cloudRun.pubsubTrigger.oidcAudience = "--eventarc_oidc_audience"
+		}},
 		"oidc flag passed empty": {"main.go", "http://127.0.0.1:8081", func(f *deployCloudRunFlags) {
 			f.cloudRun.eventarc = true
 			f.cloudRun.eventarcTrigger.oidcAudiencePassed = true
@@ -552,9 +556,9 @@ func TestComputeFlags_RejectsTriggerOIDCValuesTheSublauncherRefuses(t *testing.T
 }
 
 // triggerFlagAlphabet is the input domain of TestValidateTriggerOIDCMatchesReference:
-// letters of both cases, the list separator, and four characters that
-// strings.TrimSpace removes (space, tab, U+00A0 and U+3000).
-var triggerFlagAlphabet = []string{"a", "B", ",", " ", "\t", "\u00a0", "\u3000"}
+// letters of both cases, the list separator, the flag prefix, and four
+// characters that strings.TrimSpace removes (space, tab, U+00A0 and U+3000).
+var triggerFlagAlphabet = []string{"a", "B", ",", "-", " ", "\t", "\u00a0", "\u3000"}
 
 func isReferenceSpace(r rune) bool {
 	return r == ' ' || r == '\t' || r == '\u00a0' || r == '\u3000'
@@ -580,8 +584,8 @@ func allStrings(alphabet []string, n int) []string {
 // referenceAccepts states, independently of validateTriggerOIDC, what a deploy
 // may forward: no control character (the only part of the Dockerfile rule
 // triggerFlagAlphabet can reach), both flags or neither, no space at either end
-// of the audience, and no list entry that is empty once spaces are removed (the
-// sublauncher's startup rules).
+// of the audience, no list entry that is empty once spaces are removed, and no
+// audience or entry starting with "-" (the sublauncher's startup rules).
 func referenceAccepts(audience, accounts string) bool {
 	for _, r := range audience + accounts {
 		if r < 0x20 {
@@ -595,19 +599,20 @@ func referenceAccepts(audience, accounts string) bool {
 		return false
 	}
 	aud := []rune(audience)
-	if isReferenceSpace(aud[0]) || isReferenceSpace(aud[len(aud)-1]) {
+	if isReferenceSpace(aud[0]) || isReferenceSpace(aud[len(aud)-1]) || aud[0] == '-' {
 		return false
 	}
-	nonSpace := false
+	// first is the entry's first non-space rune, 0 until there is one.
+	var first rune
 	for _, r := range accounts + "," {
 		switch {
 		case r == ',':
-			if !nonSpace {
+			if first == 0 || first == '-' {
 				return false
 			}
-			nonSpace = false
-		case !isReferenceSpace(r):
-			nonSpace = true
+			first = 0
+		case first == 0 && !isReferenceSpace(r):
+			first = r
 		}
 	}
 	return true
@@ -632,15 +637,23 @@ func TestValidateTriggerOIDCMatchesReference(t *testing.T) {
 
 var triggerOIDCFlagNames = []string{"pubsub_oidc_audience", "pubsub_oidc_service_accounts", "eventarc_oidc_audience", "eventarc_oidc_service_accounts"}
 
+// Parsed and recorded by PreRunE as a real deploy does, so every OIDC flag
+// counts as passed.
 func TestComputeFlags_AcceptsCompleteTriggerOIDCPairs(t *testing.T) {
 	resetFlags(t, "main.go", "http://127.0.0.1:8081")
-	flags.cloudRun.pubsub = true
-	flags.cloudRun.eventarc = true
-	flags.cloudRun.pubsubTrigger.oidcAudience = "https://svc.run.app"
-	flags.cloudRun.pubsubTrigger.oidcServiceAccounts = "a@p.iam.gserviceaccount.com"
-	flags.cloudRun.eventarcTrigger.oidcAudience = "https://svc.run.app"
-	// The sublauncher trims each entry, so spaces around one are fine.
-	flags.cloudRun.eventarcTrigger.oidcServiceAccounts = "b@p.iam.gserviceaccount.com , c@p.iam.gserviceaccount.com"
+	if err := cloudrunCmd.ParseFlags([]string{
+		"--pubsub", "--eventarc",
+		"--pubsub_oidc_audience", "https://svc.run.app",
+		"--pubsub_oidc_service_accounts", "a@p.iam.gserviceaccount.com",
+		"--eventarc_oidc_audience=https://svc.run.app",
+		// The sublauncher trims each entry, so spaces around one are fine.
+		"--eventarc_oidc_service_accounts=b@p.iam.gserviceaccount.com , c@p.iam.gserviceaccount.com",
+	}); err != nil {
+		t.Fatalf("ParseFlags() = %v", err)
+	}
+	if err := cloudrunCmd.PreRunE(cloudrunCmd, nil); err != nil {
+		t.Fatalf("PreRunE() = %v", err)
+	}
 
 	if err := flags.computeFlags(); err != nil {
 		t.Errorf("computeFlags() = %v, want no error", err)
@@ -759,25 +772,34 @@ func TestComputeFlags_RejectsTriggerOIDCFlagPassedEmpty(t *testing.T) {
 }
 
 func TestCloudRunCommandRecordsPassedTriggerOIDCFlags(t *testing.T) {
-	resetFlags(t, "main.go", "http://127.0.0.1:8081")
-	if err := cloudrunCmd.ParseFlags([]string{"--pubsub_oidc_audience=", "--eventarc_oidc_service_accounts="}); err != nil {
-		t.Fatalf("ParseFlags() = %v", err)
-	}
-	if err := cloudrunCmd.PreRunE(cloudrunCmd, nil); err != nil {
-		t.Fatalf("PreRunE() = %v", err)
-	}
-
-	for _, c := range []struct {
-		name      string
-		got, want bool
+	for _, tc := range []struct {
+		args []string
+		// pubsub audience, pubsub service accounts, eventarc audience,
+		// eventarc service accounts.
+		want [4]bool
 	}{
-		{"pubsub audience", flags.cloudRun.pubsubTrigger.oidcAudiencePassed, true},
-		{"pubsub service accounts", flags.cloudRun.pubsubTrigger.oidcServiceAccountsPassed, false},
-		{"eventarc audience", flags.cloudRun.eventarcTrigger.oidcAudiencePassed, false},
-		{"eventarc service accounts", flags.cloudRun.eventarcTrigger.oidcServiceAccountsPassed, true},
+		// One flag at a time, so a typo or a swap of any two names fails.
+		{[]string{"--pubsub_oidc_audience="}, [4]bool{true, false, false, false}},
+		{[]string{"--pubsub_oidc_service_accounts="}, [4]bool{false, true, false, false}},
+		{[]string{"--eventarc_oidc_audience="}, [4]bool{false, false, true, false}},
+		{[]string{"--eventarc_oidc_service_accounts="}, [4]bool{false, false, false, true}},
+		{[]string{"--pubsub_oidc_audience=", "--pubsub_oidc_service_accounts=", "--eventarc_oidc_audience=", "--eventarc_oidc_service_accounts="}, [4]bool{true, true, true, true}},
 	} {
-		if c.got != c.want {
-			t.Errorf("%s passed = %v, want %v", c.name, c.got, c.want)
+		resetFlags(t, "main.go", "http://127.0.0.1:8081")
+		if err := cloudrunCmd.ParseFlags(tc.args); err != nil {
+			t.Fatalf("ParseFlags(%q) = %v", tc.args, err)
+		}
+		if err := cloudrunCmd.PreRunE(cloudrunCmd, nil); err != nil {
+			t.Fatalf("PreRunE() = %v", err)
+		}
+		got := [4]bool{
+			flags.cloudRun.pubsubTrigger.oidcAudiencePassed,
+			flags.cloudRun.pubsubTrigger.oidcServiceAccountsPassed,
+			flags.cloudRun.eventarcTrigger.oidcAudiencePassed,
+			flags.cloudRun.eventarcTrigger.oidcServiceAccountsPassed,
+		}
+		if got != tc.want {
+			t.Errorf("after %q, passed = %v, want %v", tc.args, got, tc.want)
 		}
 	}
 }
@@ -792,5 +814,59 @@ func TestCheckTriggerOIDCEmittedRejectsEitherFlagForADisabledTrigger(t *testing.
 		if err := checkTriggerOIDCEmitted("pubsub", false, tc); err == nil || !strings.Contains(err.Error(), "require --pubsub") {
 			t.Errorf("checkTriggerOIDCEmitted(%+v) = %v, want an error naming --pubsub", tc, err)
 		}
+	}
+}
+
+// adkgo deploy cloudrun --pubsub --eventarc \
+//
+//	--pubsub_oidc_audience $PUBSUB_AUD --eventarc_oidc_audience $EVENTARC_AUD \
+//	--pubsub_oidc_service_accounts $PUBSUB_SA --eventarc_oidc_service_accounts $EVENTARC_SA
+//
+// with the pubsub variables unset and unquoted. The shell drops both empty
+// words, so each pubsub flag takes the next eventarc flag as its value and the
+// eventarc values are left over as arguments.
+func TestComputeFlags_RejectsTriggerOIDCValueTakenFromTheNextFlag(t *testing.T) {
+	resetFlags(t, "main.go", "http://127.0.0.1:8081")
+	if err := cloudrunCmd.ParseFlags([]string{
+		"--pubsub", "--eventarc",
+		"--pubsub_oidc_audience", "--eventarc_oidc_audience", "https://svc.run.app",
+		"--pubsub_oidc_service_accounts", "--eventarc_oidc_service_accounts", "a@p.iam.gserviceaccount.com",
+	}); err != nil {
+		t.Fatalf("ParseFlags() = %v", err)
+	}
+	if err := cloudrunCmd.PreRunE(cloudrunCmd, nil); err != nil {
+		t.Fatalf("PreRunE() = %v", err)
+	}
+
+	err := flags.computeFlags()
+	if err == nil || !strings.Contains(err.Error(), `--pubsub_oidc_audience "--eventarc_oidc_audience" starts with "-"`) {
+		t.Errorf("computeFlags() = %v, want it to refuse the pubsub audience taken from the next flag", err)
+	}
+}
+
+func TestComputeFlags_RejectsTriggerOIDCValueStartingWithADash(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*deployCloudRunFlags)
+		want string
+	}{
+		{"eventarc audience", func(f *deployCloudRunFlags) { f.cloudRun.eventarcTrigger.oidcAudience = "-x" }, `--eventarc_oidc_audience "-x" starts with "-"`},
+		{"pubsub service accounts", func(f *deployCloudRunFlags) {
+			f.cloudRun.pubsubTrigger.oidcServiceAccounts = "--eventarc"
+		}, `--pubsub_oidc_service_accounts "--eventarc" starts with "-"`},
+		{"eventarc later entry", func(f *deployCloudRunFlags) {
+			f.cloudRun.eventarcTrigger.oidcServiceAccounts = "a@p.iam.gserviceaccount.com, -b"
+		}, `--eventarc_oidc_service_accounts "a@p.iam.gserviceaccount.com, -b" has an entry starting with "-"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetFlags(t, "main.go", "http://127.0.0.1:8081")
+			setValidTriggerOIDCPairs(&flags)
+			tc.set(&flags)
+
+			err := flags.computeFlags()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("computeFlags() = %v, want an error containing %q", err, tc.want)
+			}
+		})
 	}
 }

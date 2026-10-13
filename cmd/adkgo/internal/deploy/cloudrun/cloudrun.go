@@ -132,14 +132,14 @@ func init() {
 	cloudrunCmd.PersistentFlags().DurationVar(&flags.cloudRun.pubsubTrigger.maxDelay, "pubsub_max_delay", 10*time.Second, "Maximum delay for PubSub trigger retry exponential backoff")
 	cloudrunCmd.PersistentFlags().IntVar(&flags.cloudRun.pubsubTrigger.maxRuns, "pubsub_max_concurrent_runs", 100, "Maximum concurrent PubSub trigger runs")
 	cloudrunCmd.PersistentFlags().StringVar(&flags.cloudRun.pubsubTrigger.oidcAudience, "pubsub_oidc_audience", "", "Audience of the Google-signed OIDC token the PubSub push subscription attaches. Requires --pubsub and --pubsub_oidc_service_accounts. When neither OIDC flag is given, the PubSub endpoint is unauthenticated. An empty value is refused")
-	cloudrunCmd.PersistentFlags().StringVar(&flags.cloudRun.pubsubTrigger.oidcServiceAccounts, "pubsub_oidc_service_accounts", "", "Comma-separated service account emails allowed to call the PubSub endpoint. Requires --pubsub and --pubsub_oidc_audience")
+	cloudrunCmd.PersistentFlags().StringVar(&flags.cloudRun.pubsubTrigger.oidcServiceAccounts, "pubsub_oidc_service_accounts", "", "Comma-separated service account emails allowed to call the PubSub endpoint. Requires --pubsub and --pubsub_oidc_audience. An empty value is refused")
 	cloudrunCmd.PersistentFlags().BoolVar(&flags.cloudRun.eventarc, "eventarc", false, "Enable Eventarc subrouter")
 	cloudrunCmd.PersistentFlags().IntVar(&flags.cloudRun.eventarcTrigger.maxRetries, "eventarc_max_retries", 3, "Maximum retries for HTTP 429 errors from Eventarc triggers")
 	cloudrunCmd.PersistentFlags().DurationVar(&flags.cloudRun.eventarcTrigger.baseDelay, "eventarc_base_delay", 1*time.Second, "Base delay for Eventarc trigger retry exponential backoff")
 	cloudrunCmd.PersistentFlags().DurationVar(&flags.cloudRun.eventarcTrigger.maxDelay, "eventarc_max_delay", 10*time.Second, "Maximum delay for Eventarc trigger retry exponential backoff")
 	cloudrunCmd.PersistentFlags().IntVar(&flags.cloudRun.eventarcTrigger.maxRuns, "eventarc_max_concurrent_runs", 100, "Maximum concurrent Eventarc trigger runs")
 	cloudrunCmd.PersistentFlags().StringVar(&flags.cloudRun.eventarcTrigger.oidcAudience, "eventarc_oidc_audience", "", "Audience of the Google-signed OIDC token the Eventarc trigger attaches. Requires --eventarc and --eventarc_oidc_service_accounts. When neither OIDC flag is given, the Eventarc endpoint is unauthenticated. An empty value is refused")
-	cloudrunCmd.PersistentFlags().StringVar(&flags.cloudRun.eventarcTrigger.oidcServiceAccounts, "eventarc_oidc_service_accounts", "", "Comma-separated service account emails allowed to call the Eventarc endpoint. Requires --eventarc and --eventarc_oidc_audience")
+	cloudrunCmd.PersistentFlags().StringVar(&flags.cloudRun.eventarcTrigger.oidcServiceAccounts, "eventarc_oidc_service_accounts", "", "Comma-separated service account emails allowed to call the Eventarc endpoint. Requires --eventarc and --eventarc_oidc_audience. An empty value is refused")
 }
 
 // computeFlags uses command line arguments to create a full config
@@ -333,6 +333,9 @@ func validateTriggerOIDC(name string, t triggerConfigFlags) error {
 	if t.oidcServiceAccountsPassed && t.oidcServiceAccounts == "" {
 		return fmt.Errorf("%s is empty: give it a value or leave it out", saFlag)
 	}
+	if err := checkOIDCValuesAreNotFlags(audFlag, saFlag, t.oidcAudience, t.oidcServiceAccounts); err != nil {
+		return err
+	}
 	if (t.oidcAudience == "") != (t.oidcServiceAccounts == "") {
 		return fmt.Errorf("%s and %s must be set together", audFlag, saFlag)
 	}
@@ -344,6 +347,25 @@ func validateTriggerOIDC(name string, t triggerConfigFlags) error {
 			if strings.TrimSpace(account) == "" {
 				return fmt.Errorf("%s %q has an empty entry", saFlag, t.oidcServiceAccounts)
 			}
+		}
+	}
+	return nil
+}
+
+// checkOIDCValuesAreNotFlags rejects an audience or service account starting
+// with "-", which no real one does. A space-separated flag whose unquoted
+// variable is unset takes the next flag as its value, and that flag's own value
+// is then ignored as an argument.
+func checkOIDCValuesAreNotFlags(audFlag, saFlag, audience, accounts string) error {
+	if strings.HasPrefix(audience, "-") {
+		return fmt.Errorf("%s %q starts with \"-\", as when an unset variable makes a flag take the next flag as its value", audFlag, audience)
+	}
+	if strings.HasPrefix(strings.TrimSpace(accounts), "-") {
+		return fmt.Errorf("%s %q starts with \"-\", as when an unset variable makes a flag take the next flag as its value", saFlag, accounts)
+	}
+	for _, account := range strings.Split(accounts, ",") {
+		if strings.HasPrefix(strings.TrimSpace(account), "-") {
+			return fmt.Errorf("%s %q has an entry starting with \"-\"", saFlag, accounts)
 		}
 	}
 	return nil

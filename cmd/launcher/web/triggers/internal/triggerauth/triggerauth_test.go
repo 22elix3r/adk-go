@@ -86,10 +86,10 @@ func TestAuthenticatorHandsFlagValuesToNewGoogleOIDC(t *testing.T) {
 }
 
 // triggerFlagAlphabet is the alphabet TestAuthenticatorMatchesReference builds
-// its generated inputs from: letters of both cases, the list separator, and
-// four characters that strings.TrimSpace removes (space, tab, U+00A0 and
-// U+3000).
-var triggerFlagAlphabet = []string{"a", "B", ",", " ", "\t", "\u00a0", "\u3000"}
+// its generated inputs from: letters of both cases, the list separator, the
+// flag prefix, and four characters that strings.TrimSpace removes (space, tab,
+// U+00A0 and U+3000).
+var triggerFlagAlphabet = []string{"a", "B", ",", "-", " ", "\t", "\u00a0", "\u3000"}
 
 func isReferenceSpace(r rune) bool {
 	return r == ' ' || r == '\t' || r == '\u00a0' || r == '\u3000'
@@ -129,7 +129,7 @@ func referenceConfig(audience, accounts string) (cfg *authn.GoogleOIDCConfig, ok
 		return nil, false
 	}
 	aud := []rune(audience)
-	if isReferenceSpace(aud[0]) || isReferenceSpace(aud[len(aud)-1]) {
+	if isReferenceSpace(aud[0]) || isReferenceSpace(aud[len(aud)-1]) || aud[0] == '-' {
 		return nil, false
 	}
 	var entries []string
@@ -146,7 +146,7 @@ func referenceConfig(audience, accounts string) (cfg *authn.GoogleOIDCConfig, ok
 		for hi > lo && isReferenceSpace(entry[hi-1]) {
 			hi--
 		}
-		if lo == hi {
+		if lo == hi || entry[lo] == '-' {
 			return nil, false
 		}
 		entries = append(entries, string(entry[lo:hi]))
@@ -269,5 +269,43 @@ func TestAuthenticatorNilWhenFlagsAreRegisteredButNotPassed(t *testing.T) {
 	}
 	if a, err := f.Authenticator(); a != nil || err != nil {
 		t.Errorf("Authenticator() = %v, %v, want nil, nil", a, err)
+	}
+}
+
+// -oidc_audience $AUD -oidc_service_accounts $SA with one variable unset and
+// unquoted: the flag package gives that flag the next flag as its value.
+// The error names the flag whose value was taken, rather than saying the
+// other flag is missing.
+func TestAuthenticatorRejectsAValueTakenFromTheNextFlag(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-oidc_audience", "-oidc_service_accounts", "a@p.iam.gserviceaccount.com"}, `-oidc_audience "-oidc_service_accounts" starts with "-"`},
+		{[]string{"-oidc_service_accounts", "-oidc_audience", "https://svc.run.app"}, `-oidc_service_accounts "-oidc_audience" starts with "-"`},
+	} {
+		var f Flags
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		f.Register(fs)
+		if err := fs.Parse(tc.args); err != nil {
+			t.Fatalf("Parse(%q) = %v", tc.args, err)
+		}
+		if _, err := f.Authenticator(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("Authenticator() after %q = %v, want an error containing %q", tc.args, err, tc.want)
+		}
+	}
+}
+
+func TestAuthenticatorRejectsAValueStartingWithADash(t *testing.T) {
+	for _, tc := range []struct {
+		f    Flags
+		want string
+	}{
+		{Flags{audience: "-x", serviceAccounts: "a@p.iam.gserviceaccount.com"}, `-oidc_audience "-x" starts with "-"`},
+		{Flags{audience: "https://svc.run.app", serviceAccounts: "a@p.iam.gserviceaccount.com, -b"}, `-oidc_service_accounts "a@p.iam.gserviceaccount.com, -b" has an entry starting with "-"`},
+	} {
+		if _, err := tc.f.Authenticator(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("Authenticator() with %+v = %v, want an error containing %q", tc.f, err, tc.want)
+		}
 	}
 }

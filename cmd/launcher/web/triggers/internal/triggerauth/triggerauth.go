@@ -63,6 +63,14 @@ func (f *Flags) Authenticator() (authn.Authenticator, error) {
 	if f.audience == "" && f.serviceAccounts == "" {
 		return nil, nil
 	}
+	// No real audience or service account starts with "-". A space-separated
+	// flag whose unquoted variable is unset takes the next flag as its value.
+	if strings.HasPrefix(f.audience, "-") {
+		return nil, fmt.Errorf("-oidc_audience %q starts with \"-\", as when an unset variable makes a flag take the next flag as its value", f.audience)
+	}
+	if strings.HasPrefix(strings.TrimSpace(f.serviceAccounts), "-") {
+		return nil, fmt.Errorf("-oidc_service_accounts %q starts with \"-\", as when an unset variable makes a flag take the next flag as its value", f.serviceAccounts)
+	}
 	if f.serviceAccounts == "" {
 		return nil, errors.New("-oidc_audience requires -oidc_service_accounts: the audience alone does not identify the caller")
 	}
@@ -79,6 +87,9 @@ func (f *Flags) Authenticator() (authn.Authenticator, error) {
 		accounts[i] = strings.TrimSpace(accounts[i])
 		if accounts[i] == "" {
 			return nil, fmt.Errorf("-oidc_service_accounts %q has an empty entry", f.serviceAccounts)
+		}
+		if strings.HasPrefix(accounts[i], "-") {
+			return nil, fmt.Errorf("-oidc_service_accounts %q has an entry starting with \"-\"", f.serviceAccounts)
 		}
 	}
 	return newGoogleOIDC(authn.GoogleOIDCConfig{
