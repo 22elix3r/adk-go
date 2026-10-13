@@ -199,3 +199,45 @@ func TestSessionInitializationFailureRecovery(t *testing.T) {
 		t.Errorf("recovery connected more than once, calls=%d", transport.calls.Load())
 	}
 }
+
+// TestCloseWaitsForConnectionInProgress pins that Close takes the session lock
+// rather than racing a connection attempt. Without it, Close returns while the
+// attempt is still running and the session that attempt then stores is never
+// closed.
+func TestCloseWaitsForConnectionInProgress(t *testing.T) {
+	transport := &gatedSessionTransport{gate: make(chan struct{}), entered: make(chan struct{}, 16), server: mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1"}, nil)}
+	c := newConnectionRefresher(nil, transport)
+
+	ownerDone := make(chan *mcp.ClientSession, 1)
+	go func() {
+		session, err := c.getSession(t.Context())
+		if err != nil {
+			t.Errorf("getSession() error = %v", err)
+		}
+		ownerDone <- session
+	}()
+	<-transport.entered
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- c.Close() }()
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned while a connection attempt was in progress")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(transport.gate)
+	session := <-ownerDone
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if session == nil {
+		t.Fatal("connection attempt returned no session")
+	}
+	if err := session.Ping(t.Context(), nil); err == nil {
+		t.Error("session from the in-progress attempt is still open after Close")
+	}
+	if _, err := c.getSession(t.Context()); !errors.Is(err, mcp.ErrConnectionClosed) {
+		t.Errorf("getSession() after Close error = %v, want %v", err, mcp.ErrConnectionClosed)
+	}
+}
