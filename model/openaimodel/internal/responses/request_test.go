@@ -1278,6 +1278,7 @@ func TestApplyGenerationConfigRejectsUnsupportedFields(t *testing.T) {
 		{"ModelArmorConfig", &genai.GenerateContentConfig{ModelArmorConfig: &genai.ModelArmorConfig{}}},
 		{"AudioTranscriptionConfig", &genai.GenerateContentConfig{AudioTranscriptionConfig: &genai.AudioTranscriptionConfig{}}},
 		{"ContinuationToken", &genai.GenerateContentConfig{ContinuationToken: []byte("token")}},
+		{"AutomaticContinuation", &genai.GenerateContentConfig{AutomaticContinuation: genai.Ptr(false)}},
 	}
 
 	for _, tc := range tests {
