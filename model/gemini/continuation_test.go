@@ -279,21 +279,69 @@ func TestContinuation_GenerateStreamResumedBySDK(t *testing.T) {
 // off automatic continuation reaches the SDK with it off, so a pause comes
 // back as it is.
 func TestContinuation_AutomaticContinuationOff(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			api := &fakeContinuationAPI{byToken: map[string][]map[string]any{
+				"":   {candidate("one ", "CONTINUATION", "t1")},
+				"t1": {candidate("two", "STOP", "")},
+			}}
+			req := continuationRequest()
+			req.Config = &genai.GenerateContentConfig{AutomaticContinuation: genai.Ptr(false)}
+			var final *model.LLMResponse
+			for resp, err := range newContinuationModel(t, api).GenerateContent(t.Context(), req, stream) {
+				if err != nil {
+					t.Fatalf("GenerateContent: %v", err)
+				}
+				if !resp.Partial {
+					final = resp
+				}
+			}
+			if final == nil {
+				t.Fatal("no final response")
+			}
+			if final.FinishReason != genai.FinishReasonContinuation {
+				t.Errorf("finish reason = %q, want %q", final.FinishReason, genai.FinishReasonContinuation)
+			}
+			checkRequests(t, api, []string{""})
+		})
+	}
+}
+
+// TestContinuation_GenerateStreamKeepsMetadata checks that the final response
+// of a resumed stream keeps the last grounding and citation metadata any
+// chunk reported, even when the last request reports none.
+func TestContinuation_GenerateStreamKeepsMetadata(t *testing.T) {
+	withMetadata := func(c map[string]any, query, uri string) map[string]any {
+		if query != "" {
+			c["groundingMetadata"] = map[string]any{"webSearchQueries": []any{query}}
+		}
+		if uri != "" {
+			c["citationMetadata"] = map[string]any{"citationSources": []any{map[string]any{"uri": uri}}}
+		}
+		return c
+	}
 	api := &fakeContinuationAPI{byToken: map[string][]map[string]any{
-		"":   {candidate("one ", "CONTINUATION", "t1")},
-		"t1": {candidate("two", "STOP", "")},
+		"":   {withMetadata(candidate("one ", "CONTINUATION", "t1"), "q1", "https://example.com/a")},
+		"t1": {withMetadata(candidate("two ", "CONTINUATION", "t2"), "q2", "")},
+		"t2": {candidate("three", "STOP", "")},
 	}}
-	req := continuationRequest()
-	req.Config = &genai.GenerateContentConfig{AutomaticContinuation: genai.Ptr(false)}
-	var got *model.LLMResponse
-	for resp, err := range newContinuationModel(t, api).GenerateContent(t.Context(), req, false) {
+	var final *model.LLMResponse
+	for resp, err := range newContinuationModel(t, api).GenerateContent(t.Context(), continuationRequest(), true) {
 		if err != nil {
 			t.Fatalf("GenerateContent: %v", err)
 		}
-		got = resp
+		if !resp.Partial {
+			final = resp
+		}
 	}
-	if got.FinishReason != genai.FinishReasonContinuation {
-		t.Errorf("finish reason = %q, want %q", got.FinishReason, genai.FinishReasonContinuation)
+	if final == nil {
+		t.Fatal("no final response")
 	}
-	checkRequests(t, api, []string{""})
+	if diff := cmp.Diff(&genai.GroundingMetadata{WebSearchQueries: []string{"q2"}}, final.GroundingMetadata); diff != "" {
+		t.Errorf("final grounding metadata (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(&genai.CitationMetadata{Citations: []*genai.Citation{{URI: "https://example.com/a"}}}, final.CitationMetadata); diff != "" {
+		t.Errorf("final citation metadata (-want +got):\n%s", diff)
+	}
+	checkRequests(t, api, []string{"", "t1", "t2"})
 }
