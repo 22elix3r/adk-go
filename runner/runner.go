@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"iter"
 	"log"
+	"slices"
 	"time"
 
 	"google.golang.org/genai"
@@ -287,6 +288,15 @@ type runnerLiveSession struct {
 }
 
 func (s *runnerLiveSession) Send(req agent.LiveRequest) error {
+	if req.Content != nil && slices.Contains(req.Content.Parts, nil) {
+		// A nil part carries no content, so it is dropped; adk-python rejects
+		// the request instead.
+		content := *req.Content
+		content.Parts = slices.DeleteFunc(slices.Clone(content.Parts), func(p *genai.Part) bool {
+			return p == nil
+		})
+		req.Content = &content
+	}
 	err := s.sess.Send(req)
 	if err != nil {
 		return err
@@ -465,6 +475,13 @@ func (r *Runner) RunLive(ctx context.Context, userID, sessionID string, cfg agen
 
 			if event == nil {
 				err := fmt.Errorf("adk: agent %q yielded a nil event", agentToRun.Name())
+				if len(bufferedEvents) > 0 {
+					ids := make([]string, 0, len(bufferedEvents))
+					for _, bufferedEvent := range bufferedEvents {
+						ids = append(ids, bufferedEvent.ID)
+					}
+					err = fmt.Errorf("%w; discarded buffered event IDs: %q", err, ids)
+				}
 				log.Printf("%v", err)
 				yield(nil, err)
 				return
@@ -531,6 +548,25 @@ func (r *Runner) RunLive(ctx context.Context, userID, sessionID string, cfg agen
 			}
 
 			if !yield(event, nil) {
+				return
+			}
+		}
+
+		// innerIter has returned; every downstream stop above returns from wrappedIter.
+		// Live agents reach here when their session closes, including on cancellation.
+		// Python persists live events as they arrive; Go buffers them during transcription.
+		// Detach cancellation so session teardown can still persist that buffer.
+		// Match the mid-stream flush's persistence policy for buffered tool events,
+		// including those carrying inline data.
+		flushCtx := context.WithoutCancel(iCtx)
+		for _, bufferedEvent := range bufferedEvents {
+			if err := r.sessionService.AppendEvent(flushCtx, storedSession, bufferedEvent); err != nil {
+				if !yield(nil, fmt.Errorf("failed to add event to session: %w", err)) {
+					return
+				}
+				continue
+			}
+			if !yield(bufferedEvent, nil) {
 				return
 			}
 		}
