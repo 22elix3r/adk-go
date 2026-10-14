@@ -23,7 +23,9 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -250,6 +252,77 @@ func TestToolFilter(t *testing.T) {
 
 	if diff := cmp.Diff(wantToolNames, gotToolNames); diff != "" {
 		t.Errorf("tools mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestMCPToolSetClose(t *testing.T) {
+	for _, connected := range []bool{false, true} {
+		t.Run(fmt.Sprintf("connected=%t", connected), func(t *testing.T) {
+			server := mcp.NewServer(&mcp.Implementation{Name: "test_server", Version: "1"}, nil)
+			mcp.AddTool(server, &mcp.Tool{Name: "get_weather"}, weatherFunc)
+			transport := &spyTransport{Transport: &reconnectableTransport{server: server}}
+			ts, err := mcptoolset.New(mcptoolset.Config{Transport: transport})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				for session := range server.Sessions() {
+					_ = session.Close()
+				}
+			})
+			closer, ok := ts.(io.Closer)
+			if !ok {
+				t.Fatal("MCP toolset does not implement io.Closer")
+			}
+			invCtx := icontext.NewInvocationContext(t.Context(), icontext.InvocationContextParams{})
+			ctx := icontext.NewReadonlyContext(invCtx)
+			var tools []tool.Tool
+			var sessionClosed <-chan struct{}
+			if connected {
+				tools, err = ts.Tools(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for session := range server.Sessions() {
+					done := make(chan struct{})
+					sessionClosed = done
+					go func() {
+						_ = session.Wait()
+						close(done)
+					}()
+				}
+			}
+			var wg sync.WaitGroup
+			for range 2 {
+				wg.Go(func() {
+					if err := closer.Close(); err != nil {
+						t.Errorf("Close() failed: %v", err)
+					}
+				})
+			}
+			wg.Wait()
+			if connected {
+				select {
+				case <-sessionClosed:
+				case <-time.After(5 * time.Second):
+					t.Fatal("Close() left the MCP session open")
+				}
+				fnTool := tools[0].(toolinternal.FunctionTool)
+				if _, err := fnTool.Run(agent.NewToolContext(invCtx, "", nil, nil), map[string]any{"city": "Paris"}); !errors.Is(err, mcp.ErrConnectionClosed) {
+					t.Errorf("Run() after Close() error = %v, want ErrConnectionClosed", err)
+				}
+			}
+			if _, err := ts.Tools(ctx); !errors.Is(err, mcp.ErrConnectionClosed) {
+				t.Errorf("Tools() after Close() error = %v, want ErrConnectionClosed", err)
+			}
+			wantConnections := 0
+			if connected {
+				wantConnections = 1
+			}
+			if transport.connectCount != wantConnections {
+				t.Errorf("Connect() called %d times, want %d", transport.connectCount, wantConnections)
+			}
+		})
 	}
 }
 
@@ -748,6 +821,32 @@ type TestArgs struct {
 
 type TestResult struct {
 	Value int
+}
+
+func TestNewRequiresConnection(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  mcptoolset.Config
+	}{
+		{name: "empty config"},
+		{
+			name: "client without transport",
+			cfg: mcptoolset.Config{
+				Client: mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts, err := mcptoolset.New(tt.cfg)
+			if err == nil {
+				t.Fatal("New() succeeded without a transport")
+			}
+			if ts != nil {
+				t.Error("New() returned a toolset on configuration error")
+			}
+		})
+	}
 }
 
 func TestNewToolSet_RequireConfirmationProvider_Validation(t *testing.T) {
