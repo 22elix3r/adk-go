@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"iter"
 	"log"
+	"maps"
 	"slices"
 	"time"
 
@@ -216,18 +217,8 @@ func (r *Runner) Run(ctx context.Context, userID, sessionID string, msg *genai.C
 			// This does NOT emit any event.
 			defer pluginManager.RunAfterRunCallback(ctx)
 
-			earlyExitResult, err := pluginManager.RunBeforeRunCallback(ctx)
-			if earlyExitResult != nil || err != nil {
-				earlyExitEvent := session.NewEventWithContext(ctx, ctx.InvocationID())
-				earlyExitEvent.Author = "user"
-				earlyExitEvent.LLMResponse = model.LLMResponse{
-					Content: msg,
-				}
-				if err := r.sessionService.AppendEvent(ctx, storedSession, earlyExitEvent); err != nil {
-					yield(nil, fmt.Errorf("failed to add event to session: %w", err))
-					return
-				}
-				yield(earlyExitEvent, err)
+			if event, err := r.runBeforeRunCallback(ctx); event != nil || err != nil {
+				yield(event, err)
 				return
 			}
 		}
@@ -273,6 +264,41 @@ func (r *Runner) Run(ctx context.Context, userID, sessionID string, msg *genai.C
 			}
 		}
 	}
+}
+
+// runBeforeRunCallback processes and persists a plugin's replacement reply.
+// A nil event and nil error mean agent execution should continue.
+func (r *Runner) runBeforeRunCallback(ctx agent.InvocationContext) (*session.Event, error) {
+	content, err := r.pluginManager.RunBeforeRunCallback(ctx)
+	if err != nil || content == nil {
+		return nil, err
+	}
+
+	event := session.NewEventWithContext(ctx, ctx.InvocationID())
+	// Match RunLive's attribution so later turns can resolve the agent from history.
+	event.Author = ctx.Agent().Name()
+	event.Content = content
+
+	modifiedEvent, err := r.pluginManager.RunOnEventCallback(ctx, event)
+	if err != nil {
+		return nil, err
+	}
+	// Stamp after OnEvent so a replacement keeps its BeforeRun origin, without
+	// changing plugin-owned metadata.
+	if modifiedEvent != nil {
+		event = modifiedEvent
+	}
+	reply := *event
+	reply.CustomMetadata = make(map[string]any, len(event.CustomMetadata)+1)
+	maps.Copy(reply.CustomMetadata, event.CustomMetadata)
+	reply.CustomMetadata[plugininternal.BeforeRunReplyKey] = true
+	event = &reply
+	if !event.Partial {
+		if err := r.sessionService.AppendEvent(ctx, ctx.Session(), event); err != nil {
+			return nil, fmt.Errorf("failed to add event to session: %w", err)
+		}
+	}
+	return event, nil
 }
 
 type liveAgent interface {
