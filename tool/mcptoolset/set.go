@@ -94,9 +94,10 @@ func New(cfg Config) (tool.Toolset, error) {
 }
 
 // buildTransport resolves the MCP transport from cfg. When Transport is nil and
-// Endpoint is set, it builds a streamable HTTP transport to that URL. When
-// Config.Auth is set, it wraps the transport's HTTP client with a per-request
-// auth RoundTripper, which requires a streamable HTTP transport.
+// Endpoint is set, it builds a streamable HTTP transport to that URL. A
+// streamable HTTP or SSE transport is copied, and the copy's HTTP client sends
+// the ADK tracking headers. When Config.Auth is set, the client also applies a
+// per-request auth RoundTripper, which requires a streamable HTTP transport.
 func buildTransport(cfg Config) (mcp.Transport, error) {
 	transport := cfg.Transport
 	if transport == nil && cfg.Endpoint != "" {
@@ -105,28 +106,36 @@ func buildTransport(cfg Config) (mcp.Transport, error) {
 	if transport == nil {
 		return nil, fmt.Errorf("mcptoolset: set Config.Transport or Config.Endpoint")
 	}
-	if cfg.Auth == nil {
-		return transport, nil
-	}
-	st, ok := transport.(*mcp.StreamableClientTransport)
-	if !ok {
+	if _, ok := transport.(*mcp.StreamableClientTransport); cfg.Auth != nil && !ok {
 		return nil, fmt.Errorf("mcptoolset: Config.Auth requires a streamable HTTP transport; "+
 			"set Config.Endpoint or pass a *mcp.StreamableClientTransport (got %T)", transport)
 	}
-	stCopy := *st
-	stCopy.HTTPClient = authHTTPClient(st.HTTPClient, cfg.Auth)
-	return &stCopy, nil
+	switch t := transport.(type) {
+	case *mcp.StreamableClientTransport:
+		stCopy := *t
+		stCopy.HTTPClient = httpClient(t.HTTPClient, cfg.Auth)
+		return &stCopy, nil
+	case *mcp.SSEClientTransport:
+		sseCopy := *t
+		sseCopy.HTTPClient = httpClient(t.HTTPClient, nil)
+		return &sseCopy, nil
+	}
+	return transport, nil
 }
 
-// authHTTPClient returns a shallow copy of base whose Transport applies provider
-// to every request. base may be nil.
-func authHTTPClient(base *http.Client, provider auth.CredentialProvider) *http.Client {
-	c := &http.Client{}
-	if base != nil {
-		*c = *base
+// httpClient returns a shallow copy of base whose Transport adds the ADK
+// tracking headers and, when provider is non-nil, applies provider to every
+// request. A nil base stands for http.DefaultClient, as it does in the SDK.
+func httpClient(base *http.Client, provider auth.CredentialProvider) *http.Client {
+	if base == nil {
+		base = http.DefaultClient
 	}
-	c.Transport = &auth.Transport{Provider: provider, Base: c.Transport}
-	return c
+	c := *base
+	c.Transport = &trackingTransport{base: c.Transport}
+	if provider != nil {
+		c.Transport = &auth.Transport{Provider: provider, Base: c.Transport}
+	}
+	return &c
 }
 
 // Config provides initial configuration for the MCP ToolSet.
@@ -134,6 +143,15 @@ type Config struct {
 	// Client is an optional custom MCP client to use. If nil, a default client will be created.
 	Client *mcp.Client
 	// Transport that will be used to connect to MCP server.
+	//
+	// A *mcp.StreamableClientTransport or *mcp.SSEClientTransport is copied
+	// together with its HTTPClient (http.DefaultClient when nil) when New is
+	// called, so later changes to either have no effect. The copied client
+	// puts the ADK client labels ("google-adk/<version> gl-go/<version>") at
+	// the front of the User-Agent and X-Goog-Api-Client headers of every
+	// request. The HTTPClient's own Transport runs after that, so a
+	// User-Agent it sets replaces the labels. Other transport types, including
+	// a wrapper such as *mcp.LoggingTransport, are used as given.
 	Transport mcp.Transport
 
 	// Endpoint, when set and Transport is nil, builds a streamable HTTP
