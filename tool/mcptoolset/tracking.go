@@ -32,11 +32,13 @@ type trackingTransport struct {
 	base http.RoundTripper
 }
 
+// adkTokens is shared by every request, so RoundTrip clones it before appending.
+var adkTokens = strings.Fields(version.TrackingHeader())
+
 func (t *trackingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	adk := strings.Fields(version.TrackingHeader())
 	req = req.Clone(req.Context())
 	for _, name := range []string{"User-Agent", "X-Goog-Api-Client"} {
-		tokens := slices.Clone(adk)
+		tokens := slices.Clone(adkTokens)
 		for _, v := range req.Header.Values(name) {
 			for _, tok := range strings.Fields(v) {
 				if !slices.Contains(tokens, tok) {
