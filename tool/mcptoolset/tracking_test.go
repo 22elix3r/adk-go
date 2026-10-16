@@ -59,6 +59,8 @@ func TestTrackingHeadersOnMCPRequests(t *testing.T) {
 		transport func(url string) Config
 		// wantAuth is the Authorization header every request must carry, if any.
 		wantAuth string
+		// wantUA is the User-Agent every request must carry, when not the labels.
+		wantUA string
 	}{
 		{
 			name:    "endpoint",
@@ -72,6 +74,21 @@ func TestTrackingHeadersOnMCPRequests(t *testing.T) {
 			handler: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil),
 			transport: func(url string) Config {
 				return Config{Transport: &mcp.StreamableClientTransport{Endpoint: url, HTTPClient: &http.Client{}}}
+			},
+		},
+		{
+			name:    "caller transport that sets User-Agent replaces the labels",
+			handler: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil),
+			transport: func(url string) Config {
+				return Config{Transport: &mcp.StreamableClientTransport{Endpoint: url, HTTPClient: &http.Client{Transport: userAgentTransport{set: true}}}}
+			},
+			wantUA: "caller-app/1.0",
+		},
+		{
+			name:    "caller transport that adds User-Agent is not sent",
+			handler: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil),
+			transport: func(url string) Config {
+				return Config{Transport: &mcp.StreamableClientTransport{Endpoint: url, HTTPClient: &http.Client{Transport: userAgentTransport{}}}}
 			},
 		},
 		{
@@ -105,9 +122,16 @@ func TestTrackingHeadersOnMCPRequests(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Connect() error = %v", err)
 			}
-			if _, err := session.ListTools(t.Context(), nil); err != nil {
-				t.Fatalf("ListTools() error = %v", err)
+			// Concurrent calls share one transport chain, so -race can see it.
+			var wg sync.WaitGroup
+			for range 4 {
+				wg.Go(func() {
+					if _, err := session.ListTools(t.Context(), nil); err != nil {
+						t.Errorf("ListTools() error = %v", err)
+					}
+				})
 			}
+			wg.Wait()
 			if err := session.Close(); err != nil {
 				t.Fatalf("Close() error = %v", err)
 			}
@@ -117,7 +141,11 @@ func TestTrackingHeadersOnMCPRequests(t *testing.T) {
 				t.Fatal("server received no requests")
 			}
 			for i, h := range got {
-				for _, name := range []string{"User-Agent", "X-Goog-Api-Client"} {
+				wantUA := want
+				if tt.wantUA != "" {
+					wantUA = tt.wantUA
+				}
+				for name, want := range map[string]string{"User-Agent": wantUA, "X-Goog-Api-Client": want} {
 					if v := h.Values(name); len(v) != 1 || v[0] != want {
 						t.Errorf("request %d: %s = %q, want [%q]", i, name, v, want)
 					}
@@ -146,6 +174,8 @@ func TestTrackingTransportMergesCallerHeaders(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Parallel, so -race catches RoundTrip writing to the shared adkTokens.
+			t.Parallel()
 			req := httptest.NewRequest(http.MethodPost, "https://mcp.example/mcp", nil)
 			req.Header = tt.header
 			orig := tt.header.Clone()
@@ -175,21 +205,24 @@ func TestTrackingTransportMergesCallerHeaders(t *testing.T) {
 }
 
 // A nil HTTPClient means http.DefaultClient to the SDK, so the tracking client
-// must start from it rather than from a zero client. Not parallel: it swaps a
-// package-level variable.
+// must start from it rather than from a zero client, except with Auth. Not
+// parallel: it swaps a package-level variable.
 func TestTrackingClientStartsFromDefaultClient(t *testing.T) {
 	orig := http.DefaultClient
 	t.Cleanup(func() { http.DefaultClient = orig })
 	http.DefaultClient = &http.Client{Timeout: 42 * time.Second}
 
-	for _, cfg := range []Config{
-		{Endpoint: testEndpoint},
-		{Endpoint: testEndpoint, Auth: auth.StaticToken("tok")},
-		{Transport: &mcp.SSEClientTransport{Endpoint: testEndpoint}},
+	for _, tt := range []struct {
+		cfg         Config
+		wantTimeout time.Duration
+	}{
+		{cfg: Config{Endpoint: testEndpoint}, wantTimeout: 42 * time.Second},
+		{cfg: Config{Transport: &mcp.SSEClientTransport{Endpoint: testEndpoint}}, wantTimeout: 42 * time.Second},
+		{cfg: Config{Endpoint: testEndpoint, Auth: auth.StaticToken("tok")}, wantTimeout: 0},
 	} {
-		tr, err := buildTransport(cfg)
+		tr, err := buildTransport(tt.cfg)
 		if err != nil {
-			t.Fatalf("buildTransport(%+v) error = %v", cfg, err)
+			t.Fatalf("buildTransport(%+v) error = %v", tt.cfg, err)
 		}
 		var c *http.Client
 		switch tr := tr.(type) {
@@ -198,13 +231,70 @@ func TestTrackingClientStartsFromDefaultClient(t *testing.T) {
 		case *mcp.SSEClientTransport:
 			c = tr.HTTPClient
 		}
-		if c.Timeout != 42*time.Second {
-			t.Errorf("%T (auth %v): HTTPClient.Timeout = %v, want http.DefaultClient's 42s", tr, cfg.Auth != nil, c.Timeout)
+		if c.Timeout != tt.wantTimeout {
+			t.Errorf("%T (auth %v): HTTPClient.Timeout = %v, want %v", tr, tt.cfg.Auth != nil, c.Timeout, tt.wantTimeout)
 		}
 		if c == http.DefaultClient {
 			t.Errorf("%T: http.DefaultClient was used directly instead of copied", tr)
 		}
 	}
+}
+
+// With Auth and a nil HTTPClient, the credential must not pass through
+// http.DefaultClient's Transport, which may belong to someone else. Not
+// parallel: it swaps a package-level variable.
+func TestAuthCredentialBypassesDefaultClientTransport(t *testing.T) {
+	var gotAuth []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotAuth = append(gotAuth, r.Header.Get("Authorization"))
+		mu.Unlock()
+	}))
+	defer srv.Close()
+
+	orig := http.DefaultClient
+	t.Cleanup(func() { http.DefaultClient = orig })
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		r = r.Clone(r.Context())
+		r.Header.Set("Authorization", "Bearer service-tok")
+		return http.DefaultTransport.RoundTrip(r)
+	})}
+
+	tr, err := buildTransport(Config{Endpoint: srv.URL, Auth: auth.StaticToken("user-tok")})
+	if err != nil {
+		t.Fatalf("buildTransport() error = %v", err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL, http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := tr.(*mcp.StreamableClientTransport).HTTPClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("Body.Close() error = %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotAuth) != 1 || gotAuth[0] != "Bearer user-tok" {
+		t.Errorf("server received Authorization %q, want [%q]", gotAuth, "Bearer user-tok")
+	}
+}
+
+// userAgentTransport stands for a caller's own HTTP transport that sets or adds
+// a User-Agent of its own.
+type userAgentTransport struct{ set bool }
+
+func (u userAgentTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	if u.set {
+		r.Header.Set("User-Agent", "caller-app/1.0")
+	} else {
+		r.Header.Add("User-Agent", "caller-app/1.0")
+	}
+	return http.DefaultTransport.RoundTrip(r)
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
