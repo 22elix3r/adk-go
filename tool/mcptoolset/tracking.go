@@ -33,10 +33,10 @@ type trackingTransport struct {
 }
 
 func (t *trackingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	adk := version.TrackingHeader()
+	adk := strings.Fields(version.TrackingHeader())
 	req = req.Clone(req.Context())
 	for _, name := range []string{"User-Agent", "X-Goog-Api-Client"} {
-		tokens := strings.Fields(adk)
+		tokens := slices.Clone(adk)
 		for _, v := range req.Header.Values(name) {
 			for _, tok := range strings.Fields(v) {
 				if !slices.Contains(tokens, tok) {

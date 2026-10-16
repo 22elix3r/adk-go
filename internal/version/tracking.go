@@ -24,5 +24,7 @@ import (
 // for example "google-adk/2.6.0 gl-go/1.26.5". It has the same form as the
 // labels adk-python builds in google/adk/utils/_client_labels_utils.py.
 func TrackingHeader() string {
-	return "google-adk/" + Version + " gl-go/" + strings.TrimPrefix(runtime.Version(), "go")
+	return trackingHeader
 }
+
+var trackingHeader = "google-adk/" + Version + " gl-go/" + strings.TrimPrefix(runtime.Version(), "go")
