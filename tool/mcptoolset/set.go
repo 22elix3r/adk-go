@@ -112,10 +112,16 @@ func buildTransport(cfg Config) (mcp.Transport, error) {
 	}
 	switch t := transport.(type) {
 	case *mcp.StreamableClientTransport:
+		if t == nil {
+			return nil, fmt.Errorf("mcptoolset: Config.Transport is a nil %T", t)
+		}
 		stCopy := *t
 		stCopy.HTTPClient = httpClient(t.HTTPClient, cfg.Auth)
 		return &stCopy, nil
 	case *mcp.SSEClientTransport:
+		if t == nil {
+			return nil, fmt.Errorf("mcptoolset: Config.Transport is a nil %T", t)
+		}
 		sseCopy := *t
 		sseCopy.HTTPClient = httpClient(t.HTTPClient, nil)
 		return &sseCopy, nil
@@ -149,9 +155,11 @@ type Config struct {
 	// called, so later changes to either have no effect. The copied client
 	// puts the ADK client labels ("google-adk/<version> gl-go/<version>") at
 	// the front of the User-Agent and X-Goog-Api-Client headers of every
-	// request. The HTTPClient's own Transport runs after that, so a
-	// User-Agent it sets replaces the labels. Other transport types, including
-	// a wrapper such as *mcp.LoggingTransport, are used as given.
+	// request. The HTTPClient's own Transport runs after that. A User-Agent it
+	// sets with Header.Set replaces the labels, and one it adds with
+	// Header.Add is not sent, because net/http sends only the first value.
+	// Other transport types, including a wrapper such as *mcp.LoggingTransport,
+	// are used as given.
 	Transport mcp.Transport
 
 	// Endpoint, when set and Transport is nil, builds a streamable HTTP

@@ -17,6 +17,7 @@ package mcptoolset
 import (
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -132,11 +133,13 @@ func TestTrackingHeadersOnMCPRequests(t *testing.T) {
 func TestTrackingTransportMergesCallerHeaders(t *testing.T) {
 	adk := version.TrackingHeader()
 	tests := []struct {
-		name   string
-		header http.Header
-		want   string
+		name     string
+		header   http.Header
+		want     string
+		wantXGAC string
 	}{
 		{name: "no caller value", header: http.Header{}, want: adk},
+		{name: "caller x-goog-api-client is kept after ADK tokens", header: http.Header{"X-Goog-Api-Client": {"gl-go/1.0 my-lib/2"}}, want: adk, wantXGAC: adk + " gl-go/1.0 my-lib/2"},
 		{name: "caller value is kept after ADK tokens", header: http.Header{"User-Agent": {"my-app/1.0"}}, want: adk + " my-app/1.0"},
 		{name: "duplicate tokens are dropped", header: http.Header{"User-Agent": {"my-app/1.0 " + adk}}, want: adk + " my-app/1.0"},
 		{name: "repeated header values are joined", header: http.Header{"User-Agent": {"a/1", "b/2"}}, want: adk + " a/1 b/2"},
@@ -157,10 +160,14 @@ func TestTrackingTransportMergesCallerHeaders(t *testing.T) {
 			if got := sent.Header.Values("User-Agent"); len(got) != 1 || got[0] != tt.want {
 				t.Errorf("User-Agent = %q, want [%q]", got, tt.want)
 			}
-			if got := sent.Header.Values("X-Goog-Api-Client"); len(got) != 1 || got[0] != adk {
-				t.Errorf("X-Goog-Api-Client = %q, want [%q]", got, adk)
+			wantXGAC := tt.wantXGAC
+			if wantXGAC == "" {
+				wantXGAC = adk
 			}
-			if len(req.Header) != len(orig) || req.Header.Get("User-Agent") != orig.Get("User-Agent") {
+			if got := sent.Header.Values("X-Goog-Api-Client"); len(got) != 1 || got[0] != wantXGAC {
+				t.Errorf("X-Goog-Api-Client = %q, want [%q]", got, wantXGAC)
+			}
+			if !reflect.DeepEqual(req.Header, orig) {
 				t.Errorf("caller request header was mutated: got %v, want %v", req.Header, orig)
 			}
 		})

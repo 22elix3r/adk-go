@@ -186,7 +186,38 @@ func TestBuildTransport(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "no auth passes the caller transport through unchanged",
+			name: "streamable transport without auth is copied without mutating the caller's",
+			cfg:  Config{Transport: callerStreamable},
+			check: func(t *testing.T, tr mcp.Transport) {
+				st := mustStreamable(t, tr)
+				if st == callerStreamable || st.HTTPClient == base {
+					t.Error("caller streamable transport or its client was not copied")
+				}
+				if st.Endpoint != testEndpoint || st.MaxRetries != 9 || !st.DisableStandaloneSSE || st.HTTPClient.Timeout != 7*time.Second {
+					t.Errorf("preserved fields lost: %+v, timeout %v", st, st.HTTPClient.Timeout)
+				}
+				if callerStreamable.HTTPClient != base || base.Transport != nil {
+					t.Error("caller's streamable transport/client was mutated")
+				}
+			},
+		},
+		{
+			name:    "typed-nil streamable transport is an error",
+			cfg:     Config{Transport: (*mcp.StreamableClientTransport)(nil)},
+			wantErr: true,
+		},
+		{
+			name:    "typed-nil streamable transport with auth is an error",
+			cfg:     Config{Transport: (*mcp.StreamableClientTransport)(nil), Auth: auth.StaticToken("tok")},
+			wantErr: true,
+		},
+		{
+			name:    "typed-nil SSE transport is an error",
+			cfg:     Config{Transport: (*mcp.SSEClientTransport)(nil)},
+			wantErr: true,
+		},
+		{
+			name: "a non-HTTP transport is passed through unchanged",
 			cfg:  Config{Transport: callerCommand},
 			check: func(t *testing.T, tr mcp.Transport) {
 				if tr != callerCommand {
