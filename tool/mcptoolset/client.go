@@ -90,14 +90,17 @@ func (c *connectionRefresher) Close() error {
 	return c.closeErr
 }
 
-// lock takes mu, or returns ctx's error if ctx ends first. A ctx that is
-// already done fails even when mu is free, as semaphore.Weighted.Acquire does.
+// lock takes mu, or returns ctx's error if ctx ends first. A ctx that is done
+// by the time mu is taken fails too, even when mu was free, as
+// semaphore.Weighted.Acquire does.
 func (c *connectionRefresher) lock(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	select {
 	case c.mu <- struct{}{}:
+		// ctx may have ended while this call waited for mu to be handed over.
+		if err := ctx.Err(); err != nil {
+			c.unlock()
+			return err
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

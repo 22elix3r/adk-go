@@ -131,8 +131,8 @@ func TestSessionWaitCancellation(t *testing.T) {
 							t.Error("failed to close owner session")
 						}
 					}()
-					// A canceled call must not take even an available permit and disturb
-					// the cached session, including the refresh path's Ping/Close sequence.
+					// A canceled call must not disturb the cached session, even when the
+					// lock is free, including through the refresh path's Ping/Close sequence.
 					if _, err := acquire(waiterCtx); !errors.Is(err, wantErr) {
 						t.Errorf("already canceled call error=%v", err)
 					}
@@ -222,6 +222,8 @@ func TestCloseWaitsForConnectionInProgress(t *testing.T) {
 	go func() { closeDone <- c.Close() }()
 	select {
 	case <-closeDone:
+		close(transport.gate)
+		<-ownerDone
 		t.Fatal("Close returned while a connection attempt was in progress")
 	case <-time.After(100 * time.Millisecond):
 	}
@@ -239,5 +241,19 @@ func TestCloseWaitsForConnectionInProgress(t *testing.T) {
 	}
 	if _, err := c.getSession(t.Context()); !errors.Is(err, mcp.ErrConnectionClosed) {
 		t.Errorf("getSession() after Close error = %v, want %v", err, mcp.ErrConnectionClosed)
+	}
+}
+
+// TestLockFailsOnDoneContext pins that lock fails on a done context even when
+// mu is free. select picks at random between the free mu and the done ctx, so
+// the loop makes a missing check fail every run rather than by chance.
+func TestLockFailsOnDoneContext(t *testing.T) {
+	c := newConnectionRefresher(nil, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for range 100 {
+		if err := c.lock(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("lock() error = %v, want %v", err, context.Canceled)
+		}
 	}
 }
