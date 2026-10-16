@@ -19,9 +19,10 @@ import (
 	"strings"
 )
 
-// TrackingHeader returns the value ADK sends in the user-agent and
-// x-goog-api-client headers so that services can attribute traffic to ADK Go,
-// for example "google-adk/2.6.0 gl-go/1.26.5". It has the same form as the
+// TrackingHeader returns the client labels ADK puts at the front of the
+// user-agent and x-goog-api-client headers so that services can attribute
+// traffic to ADK Go, for example "google-adk/2.6.0 gl-go/1.26.5". Other tokens
+// may follow them in the header. It has the same form as the
 // labels adk-python builds in google/adk/utils/_client_labels_utils.py.
 func TrackingHeader() string {
 	return trackingHeader
