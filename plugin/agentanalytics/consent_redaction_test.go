@@ -62,9 +62,20 @@ func TestConsentRoundTripIsRedacted(t *testing.T) {
 	if _, err := p.OnUserMessageCallback()(mCtx, reply); err != nil {
 		t.Fatalf("onUserMessage: %v", err)
 	}
+	// The model response that carried the consent call is logged as content
+	// parts too, through the formatter rather than the HITL rows.
+	if _, err := p.BeforeModelCallback()(mCtx, &model.LLMRequest{Model: "gemini-test"}); err != nil {
+		t.Fatalf("beforeModel: %v", err)
+	}
+	if _, err := p.AfterModelCallback()(mCtx, &model.LLMResponse{Content: consentCall.Content}, nil); err != nil {
+		t.Fatalf("afterModel: %v", err)
+	}
 	p.AfterRunCallback()(mCtx)
 
-	rows := collectRows(t, requests, func(rows []map[string]any) bool { return len(rows) >= 2 })
+	rows := collectRows(t, requests, func(rows []map[string]any) bool { return len(rows) >= 4 })
+	if n := len(rowsOfType(rows, EventLLMResponse)); n != 1 {
+		t.Fatalf("got %d LLM_RESPONSE rows, want 1 (types: %v)", n, eventTypes(rows))
+	}
 	dump, err := json.Marshal(rows)
 	if err != nil {
 		t.Fatal(err)
