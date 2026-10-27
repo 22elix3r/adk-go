@@ -16,6 +16,8 @@
 package mcptoolset
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -144,9 +146,52 @@ func httpClient(base *http.Client, provider auth.CredentialProvider) *http.Clien
 	}
 	c.Transport = &trackingTransport{base: c.Transport}
 	if provider != nil {
-		c.Transport = &auth.Transport{Provider: provider, Base: c.Transport}
+		c.Transport = &auth.Transport{Provider: consentTolerantProvider{inner: provider}, Base: c.Transport}
 	}
 	return &c
+}
+
+// consentTolerantProvider is what the MCP transport sees. The transport also
+// carries initialize and tools/list, which run before any tool call and have
+// nowhere to pause, so a provider that still needs interactive consent is
+// treated there as "no credential yet": the request goes out unauthenticated
+// and the tool's own preflight (consentPreflight) raises the consent on the
+// first call. Without this, Tools() failed on the client side for every server
+// and the round-trip was unreachable for a user who had not consented.
+type consentTolerantProvider struct {
+	inner auth.CredentialProvider
+}
+
+// noCredential is the credential applied while consent is pending: it sets no
+// header, so a server that authenticates listing answers with its own 401.
+type noCredential struct{}
+
+func (noCredential) Apply(http.Header) error { return nil }
+
+func (p consentTolerantProvider) Credential(ctx context.Context) (auth.Credential, error) {
+	cred, err := p.inner.Credential(ctx)
+	if err == nil {
+		return cred, nil
+	}
+	var consent *auth.ConsentRequiredError
+	if errors.As(err, &consent) && consent != nil {
+		return noCredential{}, nil
+	}
+	return nil, err
+}
+
+// Refresh forwards to the inner provider when it can refresh. A 401 on a
+// request that went out with noCredential has nothing to refresh: the user has
+// not consented, so the rejection stands.
+func (p consentTolerantProvider) Refresh(ctx context.Context, rejected auth.Credential) (auth.Credential, error) {
+	if _, pending := rejected.(noCredential); pending {
+		return nil, errors.New("mcptoolset: no credential to refresh while consent is pending")
+	}
+	rp, ok := p.inner.(auth.RefreshingProvider)
+	if !ok {
+		return nil, errors.New("mcptoolset: provider does not refresh")
+	}
+	return rp.Refresh(ctx, rejected)
 }
 
 // Config provides initial configuration for the MCP ToolSet.
@@ -190,11 +235,13 @@ type Config struct {
 	// would fight over the same request.
 	//
 	// A provider that needs interactive 3-legged consent (one that can return
-	// auth.ConsentRequiredError) is driven only during tool execution, which can
-	// pause the run to ask the user. Tool listing runs before any tool call and
-	// cannot pause, so a server that also authenticates listing needs a
-	// credential that resolves without consent — non-interactive, or already
-	// consented and cached. Otherwise Tools fails.
+	// auth.ConsentRequiredError) raises it from the tool call, which can pause
+	// the run to ask the user. Tool listing runs before any tool call and cannot
+	// pause, so while consent is pending the listing requests go out without a
+	// credential rather than failing on the client side. A server that itself
+	// authenticates listing then answers 401 and Tools fails: such a server
+	// needs a credential that resolves without consent — non-interactive, or
+	// already consented and cached.
 	//
 	// An interactive provider also cannot be combined with RequireConfirmation
 	// or RequireConfirmationProvider on the same toolset: two human-in-the-loop

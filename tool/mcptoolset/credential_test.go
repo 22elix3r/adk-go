@@ -377,12 +377,67 @@ func (c *confirmedContext) Actions() *session.EventActions { return &c.actions }
 // It runs against a real streamable HTTP server so the request goes through
 // the auth RoundTripper that Config.Auth installs, which is where the listing
 // actually fails.
-func TestToolsFailsWhenListingNeedsConsent(t *testing.T) {
+// TestToolsListsWhenProviderNeedsConsent pins the order the round-trip depends
+// on over the real HTTP transport: an interactive provider that still needs
+// consent must not break listing, because listing runs before any tool call and
+// cannot pause. The request goes out unauthenticated, the tool is listed, and
+// the consent is raised by the tool's own preflight on the first call.
+func TestToolsListsWhenProviderNeedsConsent(t *testing.T) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "listing", Version: "v1"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "cred_tool"}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, struct{}, error) {
 		return &mcp.CallToolResult{}, struct{}{}, nil
 	})
-	srv := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	var authHeaders []string
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	consent := &auth.ConsentRequiredError{AuthURI: "https://consent.example/auth", Key: "k"}
+	ts, err := New(Config{Endpoint: srv.URL, Auth: providerReturning(nil, consent)})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = ts.(*set).Close() })
+
+	tools, err := ts.Tools(readonlyTestContext(t))
+	if err != nil {
+		t.Fatalf("Tools() error = %v, want listing to succeed: consent is raised per call, not at listing", err)
+	}
+	if len(tools) != 1 || tools[0].Name() != "cred_tool" {
+		t.Fatalf("Tools() = %v, want [cred_tool]", tools)
+	}
+	for _, h := range authHeaders {
+		if h != "" {
+			t.Errorf("listing sent Authorization %q, want none while consent is pending", h)
+		}
+	}
+
+	ctx := &consentContext{}
+	_, err = tools[0].(*mcpTool).Run(ctx, map[string]any{})
+	if !errors.Is(err, tool.ErrCredentialRequired) {
+		t.Fatalf("Run() error = %v, want ErrCredentialRequired from the preflight", err)
+	}
+	if len(ctx.requested) != 1 || ctx.requested[0].ExchangedAuthCredential.OAuth2.AuthURI != consent.AuthURI {
+		t.Errorf("RequestCredential got %+v, want one request carrying the provider's consent URL", ctx.requested)
+	}
+}
+
+// TestToolsFailsWhenServerAuthenticatesListing is the residual limitation: a
+// server that itself rejects an unauthenticated tools/list cannot be listed
+// before the user has consented, because listing has nowhere to pause.
+func TestToolsFailsWhenServerAuthenticatesListing(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "listing", Version: "v1"}, nil)
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
 	t.Cleanup(srv.Close)
 
 	ts, err := New(Config{
@@ -392,9 +447,9 @@ func TestToolsFailsWhenListingNeedsConsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-
+	t.Cleanup(func() { _ = ts.(*set).Close() })
 	if _, err := ts.Tools(readonlyTestContext(t)); err == nil {
-		t.Fatal("Tools() error = nil, want listing to fail: it cannot pause for consent")
+		t.Fatal("Tools() error = nil, want the server's 401 to surface: listing cannot pause for consent")
 	}
 }
 
