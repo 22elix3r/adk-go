@@ -16,6 +16,7 @@
 package mcptoolset
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,7 @@ import (
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/auth"
+	"google.golang.org/adk/v2/internal/credredirect"
 	"google.golang.org/adk/v2/tool"
 )
 
@@ -144,8 +146,28 @@ func httpClient(base *http.Client, provider auth.CredentialProvider) *http.Clien
 	c.Transport = &trackingTransport{base: c.Transport}
 	if provider != nil {
 		c.Transport = &auth.Transport{Provider: provider, Base: c.Transport}
+		c.CheckRedirect = authCheckRedirect(c.CheckRedirect)
 	}
 	return &c
+}
+
+// authCheckRedirect wraps next, the caller's redirect policy, which may be nil.
+// auth.Transport applies the credential again on every hop, so only this check
+// bounds where it travels, and next may refuse more but never allow more.
+func authCheckRedirect(next func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if err := credredirect.Check(req, via); err != nil {
+			return fmt.Errorf("mcptoolset: %w: Config.Auth is set and the credential would follow", err)
+		}
+		if next != nil {
+			return next(req, via)
+		}
+		// net/http's default cap, which a non-nil CheckRedirect replaces.
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
 }
 
 // Config provides initial configuration for the MCP ToolSet.
@@ -183,6 +205,12 @@ type Config struct {
 	// http.DefaultClient's Transport or CheckRedirect, and cookies set for one
 	// user's requests are not kept in its Jar. Requests are sent by
 	// http.DefaultTransport.
+	//
+	// With Auth, a redirect is followed only when it stays on the endpoint's
+	// host and port and either keeps the scheme or upgrades http to https,
+	// each scheme's default port counting as the same port, because the
+	// credential is applied again on every hop. A CheckRedirect on the
+	// HTTPClient runs after that check, not instead of it.
 	//
 	// Don't also set OAuthHandler on a supplied *mcp.StreamableClientTransport:
 	// Auth is applied last and overwrites the Authorization header, so the two
