@@ -31,6 +31,9 @@ type Event struct {
 	// Content is nil for lines that carry no content (state deltas, tool
 	// bookkeeping).
 	Content *genai.Content
+	// Partial marks a streamed chunk of a reply. Partial chunks are followed
+	// by one aggregated non-partial event carrying the full content, so
+	// consumers that want each reply once skip partial events.
 	Partial bool
 	// Raw is the whole decoded line, for fields this type does not model.
 	Raw map[string]any

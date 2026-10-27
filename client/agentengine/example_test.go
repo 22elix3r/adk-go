@@ -45,7 +45,8 @@ func ExampleClient_StreamQuery() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		if ev.Content == nil {
+		// The final non-partial event repeats the text of the partial chunks.
+		if ev.Content == nil || ev.Partial {
 			continue
 		}
 		for _, p := range ev.Content.Parts {
