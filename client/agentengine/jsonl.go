@@ -76,9 +76,7 @@ func decodeJSONL(chunks iter.Seq2[[]byte, error]) iter.Seq2[*Event, error] {
 				}
 			}
 		}
-		if len(buf) > 0 {
-			emit(buf)
-		}
+		emit(buf)
 	}
 }
 
