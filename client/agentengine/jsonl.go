@@ -28,8 +28,8 @@ import (
 // Event is one line of a stream-query response.
 type Event struct {
 	Author string
-	// Content is nil for lines that carry no content (state deltas, tool
-	// bookkeeping).
+	// Content is nil for lines without a content object, which some agent
+	// frameworks emit.
 	Content *genai.Content
 	// Partial marks a streamed chunk of a reply. Partial chunks are followed
 	// by one aggregated non-partial event carrying the full content, so

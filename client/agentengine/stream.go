@@ -43,8 +43,9 @@ type StreamQueryRequest struct {
 // StreamQuery runs one turn against the reasoning engine and yields its
 // events in order. The iterator ends when the server closes the stream, when
 // a remote error line arrives (reported as the error), or when ctx is done.
-// The session is created server-side on first use with the given SessionID,
-// so callers do not create sessions up front.
+// Against an adk-go agent the session is created server-side on first use
+// with the given SessionID (the server runs with AutoCreateSession). Other
+// agent frameworks may require the session to exist first.
 func (c *Client) StreamQuery(ctx context.Context, req StreamQueryRequest) iter.Seq2[*Event, error] {
 	return func(yield func(*Event, error) bool) {
 		// An abandoned GAPIC stream stays open until its ctx ends.

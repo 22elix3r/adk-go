@@ -24,8 +24,7 @@ import (
 	"google.golang.org/adk/v2/client/agentengine"
 )
 
-// ExampleClient_StreamQuery shows one turn against a deployed agent. The
-// session is created on first use with the given SessionID.
+// ExampleClient_StreamQuery shows one turn against a deployed agent.
 func ExampleClient_StreamQuery() {
 	ctx := context.Background() // an entrypoint: examples and main may use it
 	client, err := agentengine.New(ctx, agentengine.Config{
@@ -43,16 +42,18 @@ func ExampleClient_StreamQuery() {
 	})
 	for ev, err := range events {
 		if err != nil {
-			log.Fatal(err)
+			log.Print(err)
+			return
 		}
 		// The final non-partial event repeats the text of the partial chunks.
 		if ev.Content == nil || ev.Partial {
 			continue
 		}
 		for _, p := range ev.Content.Parts {
-			if p.Text != "" {
-				fmt.Print(p.Text)
+			if p == nil || p.Text == "" {
+				continue
 			}
+			fmt.Print(p.Text)
 		}
 	}
 }

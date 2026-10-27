@@ -14,8 +14,8 @@
 
 // Package agentengine calls an agent deployed on Vertex AI Agent Runtime
 // (a reasoning engine) through its stream-query method and exposes the
-// resulting events as an iterator. It knows nothing about any chat surface;
-// the Slack ingress is one consumer, a plain CLI is another.
+// resulting events as an iterator. It knows nothing about any chat surface.
+// The Slack ingress is one consumer, a plain CLI is another.
 package agentengine
 
 import (
@@ -41,7 +41,9 @@ type Config struct {
 	Name string
 }
 
-// Client talks to one reasoning engine.
+// Client talks to one reasoning engine. It is safe for concurrent use by
+// multiple goroutines: its fields are immutable after New and the underlying
+// GAPIC client is concurrency-safe.
 type Client struct {
 	name string
 	exec *aiplatform.ReasoningEngineExecutionClient

@@ -197,6 +197,9 @@ func TestStreamQueryCancelledContext(t *testing.T) {
 	}()
 	cancel()
 	err := <-done
+	if err == nil {
+		t.Fatal("StreamQuery() error = nil after cancel, want cancellation")
+	}
 	if status.Code(err) != codes.Canceled && !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("error = %v, want cancellation", err)
 	}
