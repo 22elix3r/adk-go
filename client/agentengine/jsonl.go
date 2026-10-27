@@ -94,7 +94,9 @@ func decodeLine(line []byte) (*Event, error) {
 	if c, ok := raw["content"]; ok && c != nil {
 		// genai's JSON tags are camelCase, but servers emit snake_case keys,
 		// so normalize before decoding.
-		b, err := json.Marshal(camelizeKeys(c))
+		c = camelizeKeys(c)
+		stdBase64Parts(c)
+		b, err := json.Marshal(c)
 		if err != nil {
 			return nil, fmt.Errorf("agentengine: re-encoding content: %w", err)
 		}
@@ -158,4 +160,38 @@ func snakeToCamel(s string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// stdBase64Parts rewrites the bytes fields of each part (inlineData.data and
+// thoughtSignature) to standard base64 in place. Pydantic emits bytes as
+// URL-safe base64, while encoding/json decodes []byte only from standard
+// base64, so a Python agent's value would otherwise fail the whole line.
+// content must be a value returned by camelizeKeys, which the caller owns.
+func stdBase64Parts(content any) {
+	c, _ := content.(map[string]any)
+	parts, _ := c["parts"].([]any)
+	for _, p := range parts {
+		part, _ := p.(map[string]any)
+		if s, ok := part["thoughtSignature"].(string); ok {
+			part["thoughtSignature"] = stdBase64(s)
+		}
+		if blob, ok := part["inlineData"].(map[string]any); ok {
+			if s, ok := blob["data"].(string); ok {
+				blob["data"] = stdBase64(s)
+			}
+		}
+	}
+}
+
+// stdBase64 converts URL-safe base64 to the standard alphabet and restores
+// padding. Strings without '-' or '_' are returned unchanged.
+func stdBase64(s string) string {
+	if !strings.ContainsAny(s, "-_") {
+		return s
+	}
+	s = strings.NewReplacer("-", "+", "_", "/").Replace(s)
+	if r := len(s) % 4; r != 0 {
+		s += strings.Repeat("=", 4-r)
+	}
+	return s
 }

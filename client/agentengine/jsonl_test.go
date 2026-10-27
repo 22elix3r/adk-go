@@ -253,3 +253,40 @@ func TestDecodeJSONLPartFieldCasing(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeJSONLURLSafeBase64(t *testing.T) {
+	// Pydantic writes bytes as URL-safe base64, often unpadded.
+	tests := []struct {
+		name string
+		part string
+		want *genai.Part
+	}{
+		{
+			name: "URL-safe inline data",
+			part: `{"inline_data":{"mime_type":"application/octet-stream","data":"-__-"}}`,
+			want: &genai.Part{InlineData: &genai.Blob{MIMEType: "application/octet-stream", Data: []byte{0xfb, 0xff, 0xfe}}},
+		},
+		{
+			name: "unpadded URL-safe thought signature",
+			part: `{"text":"x","thought_signature":"-_8"}`,
+			want: &genai.Part{Text: "x", ThoughtSignature: []byte{0xfb, 0xff}},
+		},
+		{
+			name: "padded standard base64 is unchanged",
+			part: `{"text":"x","thought_signature":"+/8="}`,
+			want: &genai.Part{Text: "x", ThoughtSignature: []byte{0xfb, 0xff}},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			line := `{"author":"root","content":{"role":"model","parts":[` + tc.part + `]}}` + "\n"
+			got, err := collect(t, decodeJSONL(chunksOf(line)))
+			if err != nil || len(got) != 1 {
+				t.Fatalf("decodeJSONL() = %d events, %v; want 1, nil", len(got), err)
+			}
+			if diff := cmp.Diff([]*genai.Part{tc.want}, got[0].Content.Parts); diff != "" {
+				t.Errorf("Parts mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
