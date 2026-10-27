@@ -75,14 +75,14 @@ func TestAuthResponseDefaultsToNil(t *testing.T) {
 	}
 }
 
-// TestWithDeltaThreadsCredentialResponse pins the resume seam. The flow has no
+// TestWithDeltaThreadsAuthResponse pins the resume seam. The flow has no
 // other way to hand a tool its consent response, because NewToolContext's
 // signature is public API and cannot grow a parameter.
-func TestWithDeltaThreadsCredentialResponse(t *testing.T) {
+func TestWithDeltaThreadsAuthResponse(t *testing.T) {
 	c := newCredentialToolContext("call-1")
 	want := &authconsent.AuthConfig{CredentialKey: "k"}
 
-	got := c.WithDelta(&CommonContextDelta{CredentialResponse: want}).AuthResponse()
+	got := c.WithDelta(&CommonContextDelta{AuthResponse: want}).AuthResponse()
 	if got != want {
 		t.Errorf("AuthResponse() after WithDelta = %v, want %v", got, want)
 	}
@@ -91,10 +91,10 @@ func TestWithDeltaThreadsCredentialResponse(t *testing.T) {
 	}
 }
 
-func TestWithDeltaWithoutCredentialResponseKeepsTheCurrentOne(t *testing.T) {
+func TestWithDeltaWithoutAuthResponseKeepsTheCurrentOne(t *testing.T) {
 	c := newCredentialToolContext("call-1")
 	existing := &authconsent.AuthConfig{CredentialKey: "k"}
-	resumed := c.WithDelta(&CommonContextDelta{CredentialResponse: existing})
+	resumed := c.WithDelta(&CommonContextDelta{AuthResponse: existing})
 
 	branch := "other"
 	if got := resumed.WithDelta(&CommonContextDelta{Path: &branch}).AuthResponse(); got != existing {
@@ -102,21 +102,21 @@ func TestWithDeltaWithoutCredentialResponseKeepsTheCurrentOne(t *testing.T) {
 	}
 }
 
-// TestNewToolContextDoesNotInheritCredentialResponse pins that a tool context
+// TestNewToolContextDoesNotInheritAuthResponse pins that a tool context
 // built from a resumed one starts clean.
 //
 // NewToolContext copies every field of the context it is given and then resets
 // the per-call ones. AuthResponse is exactly the signal a tool reads as "I was
 // resumed, proceed", so inheriting it would let an unrelated call skip the
 // consent it needs.
-func TestNewToolContextDoesNotInheritCredentialResponse(t *testing.T) {
+func TestNewToolContextDoesNotInheritAuthResponse(t *testing.T) {
 	ic := newCredentialInvocationContext(t)
 	// Reach the *commonContext the wrapper holds: that is the branch where
 	// NewToolContext copies every field of the context it is given, and so the
 	// only branch where a stale consent response can be inherited.
 	wrapper := NewToolContext(ic, "call-1", nil, nil).(*toolContextWrapper)
 	resumed := wrapper.context.WithDelta(&CommonContextDelta{
-		CredentialResponse: &authconsent.AuthConfig{CredentialKey: "k"},
+		AuthResponse: &authconsent.AuthConfig{CredentialKey: "k"},
 	})
 	if _, ok := resumed.(*commonContext); !ok {
 		t.Fatalf("setup: resumed context is %T, want *commonContext", resumed)
@@ -132,7 +132,7 @@ func TestNewToolContextDoesNotInheritCredentialResponse(t *testing.T) {
 	}
 }
 
-// TestWithCredentialResponseKeepsTheContextImplementation pins that a resumed
+// TestWithAuthResponseKeepsTheContextImplementation pins that a resumed
 // tool sees the same kind of context its first call saw.
 //
 // WithDelta on a tool context returns the inner context, dropping the
@@ -140,11 +140,11 @@ func TestNewToolContextDoesNotInheritCredentialResponse(t *testing.T) {
 // Session, Agent and EndInvocation where its first call found the wrapper's
 // deliberate refusals, so the same tool would take different branches depending
 // on whether it had been through consent.
-func TestWithCredentialResponseKeepsTheContextImplementation(t *testing.T) {
+func TestWithAuthResponseKeepsTheContextImplementation(t *testing.T) {
 	ic := newCredentialInvocationContext(t)
 	fresh := NewToolContext(ic, "call-1", nil, nil)
 
-	resumed := WithCredentialResponse(fresh, &authconsent.AuthConfig{CredentialKey: "k"})
+	resumed := WithAuthResponse(fresh, &authconsent.AuthConfig{CredentialKey: "k"})
 
 	if resumed.AuthResponse() == nil {
 		t.Fatal("AuthResponse() = nil, want the consent response threaded in")
@@ -159,13 +159,13 @@ func TestWithCredentialResponseKeepsTheContextImplementation(t *testing.T) {
 	}
 }
 
-// TestWithCredentialResponseNilIsIdentity pins the no-op case: a first call has
+// TestWithAuthResponseNilIsIdentity pins the no-op case: a first call has
 // no consent response and must not be re-derived.
-func TestWithCredentialResponseNilIsIdentity(t *testing.T) {
+func TestWithAuthResponseNilIsIdentity(t *testing.T) {
 	ic := newCredentialInvocationContext(t)
 	fresh := NewToolContext(ic, "call-1", nil, nil)
-	if got := WithCredentialResponse(fresh, nil); got != fresh {
-		t.Errorf("WithCredentialResponse(ctx, nil) = %p, want the original %p", got, fresh)
+	if got := WithAuthResponse(fresh, nil); got != fresh {
+		t.Errorf("WithAuthResponse(ctx, nil) = %p, want the original %p", got, fresh)
 	}
 }
 
@@ -178,7 +178,7 @@ func TestWithCredentialResponseNilIsIdentity(t *testing.T) {
 // tool's error with no prompt.
 func TestRequestCredentialRefusesASecondRoundTrip(t *testing.T) {
 	c := newCredentialToolContext("call-1")
-	resumed := c.WithDelta(&CommonContextDelta{CredentialResponse: &authconsent.AuthConfig{CredentialKey: "k"}})
+	resumed := c.WithDelta(&CommonContextDelta{AuthResponse: &authconsent.AuthConfig{CredentialKey: "k"}})
 
 	err := resumed.RequestCredential(authconsent.OAuth2Consent("https://consent.example/more-scope", "", ""))
 	if err == nil {
@@ -216,7 +216,7 @@ func TestOneHumanRoundTripPerCall(t *testing.T) {
 		},
 		{
 			name:  "confirmation after a consent resume",
-			setup: func(c *commonContext) { c.credentialResponse = &authconsent.AuthConfig{} },
+			setup: func(c *commonContext) { c.authResponse = &authconsent.AuthConfig{} },
 			ask:   func(c *commonContext) error { return c.RequestConfirmation("approve?", nil) },
 		},
 		{

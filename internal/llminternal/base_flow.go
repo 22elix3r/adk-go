@@ -847,8 +847,6 @@ func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event,
 			if !yield(modelResponseEvent, nil) {
 				return
 			}
-			// TODO: generate and yield an auth event if needed.
-
 			if resp.Partial {
 				continue
 			}
@@ -1368,7 +1366,7 @@ func (f *Flow) handleFunctionCalls(ctx agent.InvocationContext, toolsDict map[st
 			}
 			toolCtx := agent.NewToolContext(toolCallCtx, fnCall.ID, &session.EventActions{StateDelta: make(map[string]any)}, confirmation)
 			// Thread the interactive OAuth consent response on the resume path.
-			toolCtx = agent.WithCredentialResponse(toolCtx, authResponses[fnCall.ID])
+			toolCtx = agent.WithAuthResponse(toolCtx, authResponses[fnCall.ID])
 
 			var result map[string]any
 			var curTool tool.Tool

@@ -367,7 +367,7 @@ func NewToolContext(ic InvocationContext, functionCallID string, actions *sessio
 	// res was copied from ic, which may itself be a resumed tool context. A
 	// consent response belongs to the call it was granted for, and AuthResponse
 	// is exactly the signal a tool reads as "I was resumed, proceed".
-	res.credentialResponse = nil
+	res.authResponse = nil
 	res.artifacts = newTrackedArtifacts(ic.Artifacts(), actions)
 
 	wrapper := &toolContextWrapper{
@@ -404,11 +404,11 @@ type commonContext struct {
 	functionCallID   string
 	toolConfirmation *toolconfirmation.ToolConfirmation
 
-	// credentialResponse carries the end user's interactive OAuth consent
+	// authResponse carries the end user's interactive OAuth consent
 	// response on a resumed tool call. It is threaded in via WithDelta rather
 	// than a NewToolContext parameter, because NewToolContext's signature is
 	// public API.
-	credentialResponse *authconsent.AuthConfig
+	authResponse *authconsent.AuthConfig
 
 	// Fields below are used by node contexts.
 	// resumeInputs are keyed by InterruptID. Nil on fresh activations
@@ -730,7 +730,7 @@ func (c *commonContext) RequestConfirmation(hint string, payload any) error {
 	}
 	// Only a consent round-trip on the same call is refused here. A second
 	// confirmation is long-standing behavior this change leaves alone.
-	if c.credentialResponse != nil || len(c.actions.RequestedCredentials) > 0 {
+	if c.authResponse != nil || len(c.actions.RequestedCredentials) > 0 {
 		return c.secondRoundTrip("confirmation")
 	}
 	if c.actions.RequestedToolConfirmations == nil {
@@ -751,7 +751,7 @@ func (c *commonContext) RequestConfirmation(hint string, payload any) error {
 // AuthResponse returns the interactive OAuth consent response for the current
 // tool call, or nil if none. It is populated only on a resumed call.
 func (c *commonContext) AuthResponse() *authconsent.AuthConfig {
-	return c.credentialResponse
+	return c.authResponse
 }
 
 // secondRoundTrip reports why a tool call may not start a human-in-the-loop
@@ -769,7 +769,7 @@ func (c *commonContext) secondRoundTrip(kind string) error {
 		return fmt.Errorf("cannot request credential on a tool call that already requested confirmation")
 	case kind == "confirmation" && len(c.actions.RequestedCredentials) > 0:
 		return fmt.Errorf("cannot request confirmation on a tool call that already requested credential")
-	case c.credentialResponse != nil:
+	case c.authResponse != nil:
 		return fmt.Errorf("cannot request %s on a tool call already resumed after consent", kind)
 	case c.toolConfirmation != nil:
 		return fmt.Errorf("cannot request %s on a tool call already resumed after confirmation", kind)
@@ -777,7 +777,7 @@ func (c *commonContext) secondRoundTrip(kind string) error {
 	return nil
 }
 
-// WithCredentialResponse returns a copy of ctx carrying resp as the current
+// WithAuthResponse returns a copy of ctx carrying resp as the current
 // tool call's interactive OAuth consent response, readable through
 // [Context.AuthResponse]. A nil resp returns ctx unchanged.
 //
@@ -788,11 +788,11 @@ func (c *commonContext) secondRoundTrip(kind string) error {
 // and EndInvocation where the wrapper deliberately withholds them.
 // [NewToolContext] cannot take the response instead: its signature is public
 // API.
-func WithCredentialResponse(ctx Context, resp *authconsent.AuthConfig) Context {
+func WithAuthResponse(ctx Context, resp *authconsent.AuthConfig) Context {
 	if resp == nil {
 		return ctx
 	}
-	d := &CommonContextDelta{CredentialResponse: resp}
+	d := &CommonContextDelta{AuthResponse: resp}
 	if w, ok := ctx.(*toolContextWrapper); ok {
 		return &toolContextWrapper{context: w.context.WithDelta(d)}
 	}

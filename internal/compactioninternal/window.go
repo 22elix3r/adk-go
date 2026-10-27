@@ -27,8 +27,8 @@ import (
 // to summarize.
 //
 // A single left-to-right pass tracks "open" obligations keyed by call ID: a
-// function call, or a tool-confirmation request, opens one; a function response
-// with the same ID closes it. Responses are applied before calls within one
+// function call, a tool-confirmation request, or a credential-consent request
+// opens one; a function response with the same ID closes it. Responses are applied before calls within one
 // event, so a response only ever closes an obligation opened by an earlier
 // event. Summarizing is safe exactly at the points where nothing is open, so
 // the prefix ending at the last such point is returned.
