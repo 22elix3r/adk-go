@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"iter"
 	"maps"
+	"slices"
 
 	"google.golang.org/genai"
 
@@ -91,14 +92,22 @@ func RequestCredentialRequestProcessor(ctx agent.InvocationContext, req *model.L
 		// client's reply. The same reasoning as the confirmation processor's
 		// tampering check applies, one step earlier: the user's reply carries only
 		// the consent call's id, so the binding from consent to tool call comes
-		// entirely from an event in the session. Honor that binding only from an
-		// event this agent authored, and refuse a consent id that two events bind
-		// to different tool calls — a single consent cannot be known to cover both,
-		// so fail closed and resume neither.
+		// entirely from an event in the session. Honor that binding only from a
+		// consent call this flow emitted — authored by this agent and marked
+		// long-running, which generateRequestCredentialEvent always does and a
+		// model emitting a call under the reserved name cannot do — and refuse a
+		// consent id that two events bind to different tool calls: a single
+		// consent cannot be known to cover both, so fail closed and resume
+		// neither.
 		resumeTarget := make(map[string]string, len(consentResponses))
 		credentialKey := make(map[string]string, len(consentResponses))
 		requestIndex := make(map[string]int, len(consentResponses))
 		conflicting := make(map[string]bool)
+		// Every consent id that binds each tool call, answered or not. A call
+		// bound to two different consent ids is ambiguous whichever of them the
+		// client answers, so the count has to run over the whole history rather
+		// than over the ids in this reply.
+		consentsByTarget := make(map[string]map[string]bool)
 		for i, event := range events {
 			if event.Author != agentName {
 				continue
@@ -107,11 +116,18 @@ func RequestCredentialRequestProcessor(ctx agent.InvocationContext, req *model.L
 				if functionCall.Name != authconsent.FunctionCallName {
 					continue
 				}
-				if _, ok := consentResponses[functionCall.ID]; !ok {
+				if !slices.Contains(event.LongRunningToolIDs, functionCall.ID) {
 					continue
 				}
 				targetID, ok := pausedCallID(functionCall)
 				if !ok {
+					continue
+				}
+				if consentsByTarget[targetID] == nil {
+					consentsByTarget[targetID] = make(map[string]bool)
+				}
+				consentsByTarget[targetID][functionCall.ID] = true
+				if _, ok := consentResponses[functionCall.ID]; !ok {
 					continue
 				}
 				if prev, seen := resumeTarget[functionCall.ID]; seen {
@@ -129,24 +145,17 @@ func RequestCredentialRequestProcessor(ctx agent.InvocationContext, req *model.L
 			}
 		}
 
-		// Refuse the mirror ambiguity too: two consent calls answered in the same
-		// turn that both name one tool call. Ranging the map would pick a winner
-		// by Go's randomized iteration order, so the tool would resume under one
-		// credential key or the other at random. Neither consent is known to
-		// cover the other, so resume under neither.
-		targetCount := make(map[string]int, len(resumeTarget))
-		for consentID, targetID := range resumeTarget {
-			if !conflicting[consentID] {
-				targetCount[targetID]++
-			}
-		}
-
 		// Key the consent responses by the tool call to resume. The credential key
 		// comes from the agent's own request, not from the client's reply, so a
 		// client cannot point the resumed tool at another credential.
 		authResponses := make(map[string]*authconsent.AuthConfig, len(resumeTarget))
 		for consentID, targetID := range resumeTarget {
-			if conflicting[consentID] || targetCount[targetID] > 1 {
+			// The mirror ambiguity: one tool call named by two consent ids. Picking
+			// one would resume the tool under one credential key or the other,
+			// decided by which id the client happened to answer, or by map order
+			// when both arrive together. Neither consent is known to cover the
+			// other, so resume under neither.
+			if conflicting[consentID] || len(consentsByTarget[targetID]) > 1 {
 				continue
 			}
 			if answeredAfter(events, requestIndex[consentID], targetID) {
@@ -165,7 +174,7 @@ func RequestCredentialRequestProcessor(ctx agent.InvocationContext, req *model.L
 			return
 		}
 
-		for k := len(events) - 2; k >= 0; k-- {
+		for k := len(events) - 2; k >= 0 && len(authResponses) > 0; k-- {
 			event := events[k]
 			// Only this agent's own tool calls may be resumed. Function call parts
 			// reach the session from elsewhere too, notably an A2A peer response
@@ -221,11 +230,17 @@ func RequestCredentialRequestProcessor(ctx agent.InvocationContext, req *model.L
 			ev, err := f.handleFunctionCalls(ctx, toolsmap, &model.LLMResponse{
 				Content: &genai.Content{Parts: parts, Role: genai.RoleUser},
 			}, nil, toResume, nil)
-			yield(ev, err)
-			// One consent turn resumes one batch of tool calls. adk-python returns
-			// here too; continuing would re-dispatch any call whose id also appears
-			// in an earlier event, running its tool twice.
-			return
+			if !yield(ev, err) || err != nil {
+				return
+			}
+			// A consent is spent once its call has been resumed, so a call whose
+			// id also appears in an earlier event is not dispatched again. The
+			// scan goes on for the consents this reply answered in earlier turns:
+			// a client may consent to two prompts at once, and adk-python's early
+			// return would drop the older one.
+			for _, callID := range resumeOrder {
+				delete(authResponses, callID)
+			}
 		}
 	}
 }
