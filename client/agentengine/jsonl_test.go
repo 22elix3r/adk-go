@@ -201,3 +201,46 @@ func TestDecodeJSONLStopsWhenConsumerStops(t *testing.T) {
 		t.Errorf("producer yielded %d chunks after consumer stopped, want 1", yielded)
 	}
 }
+
+func TestDecodeJSONLPartFieldCasing(t *testing.T) {
+	// The adk-go server writes snake_case keys and Python agents write
+	// camelCase. Both must decode to the same parts, and keys inside args,
+	// response and partMetadata are user data that must stay as written.
+	tests := []struct {
+		name  string
+		parts string
+	}{
+		{
+			name: "snake_case from the adk-go server",
+			parts: `[{"function_call":{"id":"c1","name":"lookup","args":{"user_id":"U1","nested":{"some_key":1}}}},` +
+				`{"function_response":{"name":"lookup","response":{"status_code":200}}},` +
+				`{"inline_data":{"mime_type":"image/png","data":"AQID"}},` +
+				`{"text":"hi","thought_signature":"AQ==","part_metadata":{"source_file":"x"}}]`,
+		},
+		{
+			name: "camelCase from Python agents",
+			parts: `[{"functionCall":{"id":"c1","name":"lookup","args":{"user_id":"U1","nested":{"some_key":1}}}},` +
+				`{"functionResponse":{"name":"lookup","response":{"status_code":200}}},` +
+				`{"inlineData":{"mimeType":"image/png","data":"AQID"}},` +
+				`{"text":"hi","thoughtSignature":"AQ==","partMetadata":{"source_file":"x"}}]`,
+		},
+	}
+	want := []*genai.Part{
+		{FunctionCall: &genai.FunctionCall{ID: "c1", Name: "lookup", Args: map[string]any{"user_id": "U1", "nested": map[string]any{"some_key": float64(1)}}}},
+		{FunctionResponse: &genai.FunctionResponse{Name: "lookup", Response: map[string]any{"status_code": float64(200)}}},
+		{InlineData: &genai.Blob{MIMEType: "image/png", Data: []byte{1, 2, 3}}},
+		{Text: "hi", ThoughtSignature: []byte{1}, PartMetadata: map[string]any{"source_file": "x"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			line := `{"author":"root","content":{"role":"model","parts":` + tc.parts + `}}` + "\n"
+			got, err := collect(t, decodeJSONL(chunksOf(line)))
+			if err != nil || len(got) != 1 {
+				t.Fatalf("decodeJSONL() = %d events, %v; want 1, nil", len(got), err)
+			}
+			if diff := cmp.Diff(want, got[0].Content.Parts); diff != "" {
+				t.Errorf("Parts mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}

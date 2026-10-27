@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"strings"
 
 	"google.golang.org/genai"
 )
@@ -90,9 +91,9 @@ func decodeLine(line []byte) (*Event, error) {
 	ev.Author, _ = raw["author"].(string)
 	ev.Partial, _ = raw["partial"].(bool)
 	if c, ok := raw["content"]; ok && c != nil {
-		// Re-encode just the content: genai's JSON tags are already the
-		// snake_case/lowercase names the server emits.
-		b, err := json.Marshal(c)
+		// genai's JSON tags are camelCase, but the adk-go server emits
+		// snake_case keys, so normalize before decoding.
+		b, err := json.Marshal(camelizeKeys(c))
 		if err != nil {
 			return nil, fmt.Errorf("agentengine: re-encoding content: %w", err)
 		}
@@ -103,4 +104,56 @@ func decodeLine(line []byte) (*Event, error) {
 		ev.Content = &content
 	}
 	return ev, nil
+}
+
+// userKeyFields hold map-valued genai fields whose keys are user data (tool
+// arguments and results, part metadata) and must reach the caller unchanged.
+var userKeyFields = map[string]bool{"args": true, "response": true, "partMetadata": true}
+
+// camelizeKeys renames snake_case object keys to the lowerCamelCase names in
+// genai's JSON tags. The adk-go server writes events with snake_case field
+// names, while Python agents already emit camelCase, which passes through
+// unchanged. Values of userKeyFields are copied without descending into them.
+func camelizeKeys(v any) any {
+	switch v := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for k, val := range v {
+			k = snakeToCamel(k)
+			if userKeyFields[k] {
+				out[k] = val
+				continue
+			}
+			out[k] = camelizeKeys(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, val := range v {
+			out[i] = camelizeKeys(val)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func snakeToCamel(s string) string {
+	if !strings.Contains(s, "_") {
+		return s
+	}
+	var b strings.Builder
+	upper := false
+	for _, r := range s {
+		if r == '_' {
+			upper = b.Len() > 0
+			continue
+		}
+		if upper {
+			r = []rune(strings.ToUpper(string(r)))[0]
+			upper = false
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
