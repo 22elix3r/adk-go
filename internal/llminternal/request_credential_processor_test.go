@@ -43,9 +43,10 @@ const (
 // facts are the whole contract between the processor and a tool that needs
 // consent, so the tool asserts them by returning them.
 type consentEchoTool struct {
-	runs       int
-	lastArgs   map[string]any
-	mutateArgs bool
+	runs             int
+	mutateNestedArgs bool
+	lastArgs         map[string]any
+	mutateArgs       bool
 }
 
 func (t *consentEchoTool) Name() string { return credToolName }
@@ -63,6 +64,11 @@ func (t *consentEchoTool) Run(ctx agent.Context, args any) (map[string]any, erro
 		t.lastArgs = m
 		if t.mutateArgs {
 			m["q"] = "rewritten by the tool"
+		}
+		if t.mutateNestedArgs {
+			if filter, ok := m["filter"].(map[string]any); ok {
+				filter["q"] = "rewritten by the tool"
+			}
 		}
 	}
 	resp := ctx.AuthResponse()
@@ -735,5 +741,33 @@ func TestRequestCredentialResumesEveryAnsweredBatch(t *testing.T) {
 	slices.Sort(ids)
 	if want := []string{"paused-Y", credPausedCall}; !slices.Equal(ids, want) {
 		t.Errorf("resumed call ids = %v, want %v", ids, want)
+	}
+}
+
+// TestRequestCredentialDoesNotAliasNestedStoredArgs is the nested half of the
+// copy promise: a tool editing a map inside its args must not reach the stored
+// call either. A one-level clone shares every nested map with session history.
+func TestRequestCredentialDoesNotAliasNestedStoredArgs(t *testing.T) {
+	paused := pausedCallEvent(credAgentName)
+	paused.Content.Parts[0].FunctionCall.Args = map[string]any{"filter": map[string]any{"q": "hi"}}
+	events := []*session.Event{
+		paused,
+		consentRequestEvent(credAgentName, credConsentFC, credPausedCall, "key"),
+		consentReplyEvent(credConsentFC, clientReply("https://app.example/cb", "key")),
+	}
+
+	agnt, echo, tools := newConsentAgent(t)
+	echo.mutateNestedArgs = true
+	ctx := createInvocationContext(t, agnt, &fakeSession{events: events})
+	for _, err := range llminternal.RequestCredentialRequestProcessor(ctx, &model.LLMRequest{}, &llminternal.Flow{Tools: tools}) {
+		if err != nil {
+			t.Fatalf("RequestCredentialRequestProcessor() error = %v", err)
+		}
+	}
+	if echo.runs != 1 {
+		t.Fatalf("tool ran %d times, want 1", echo.runs)
+	}
+	if got := paused.Content.Parts[0].FunctionCall.Args["filter"].(map[string]any)["q"]; got != "hi" {
+		t.Errorf("stored call args[filter][q] = %v after the resume, want %q unchanged", got, "hi")
 	}
 }

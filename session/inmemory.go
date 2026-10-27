@@ -30,6 +30,8 @@ import (
 
 	"google.golang.org/adk/v2/internal/sessionutils"
 	"google.golang.org/adk/v2/platform"
+
+	"google.golang.org/adk/v2/tool/authconsent"
 )
 
 type stateMap map[string]any
@@ -247,7 +249,9 @@ func (s *inMemoryService) AppendEvent(ctx context.Context, curSession Session, e
 	// appendEvent stored locally — it clones Compaction, ArtifactDelta,
 	// RequestedToolConfirmations and RequestedCredentials where the local
 	// record aliases them. The map clones are shallow, so a value's own
-	// pointers stay shared.
+	// pointers stay shared, except for RequestedCredentials, whose values are
+	// cloned: they hold the consent URL and nonce behind pointers, and a
+	// caller keeping its config must not be able to rewrite the stored record.
 	eventCopy := &Event{
 		ID:             event.ID,
 		InvocationID:   event.InvocationID,
@@ -259,7 +263,7 @@ func (s *inMemoryService) AppendEvent(ctx context.Context, curSession Session, e
 			StateDelta:                 trimmedDelta,
 			ArtifactDelta:              maps.Clone(event.Actions.ArtifactDelta),
 			RequestedToolConfirmations: maps.Clone(event.Actions.RequestedToolConfirmations),
-			RequestedCredentials:       maps.Clone(event.Actions.RequestedCredentials),
+			RequestedCredentials:       cloneRequestedCredentials(event.Actions.RequestedCredentials),
 			TransferToAgent:            event.Actions.TransferToAgent,
 			Escalate:                   event.Actions.Escalate,
 			SkipSummarization:          event.Actions.SkipSummarization,
@@ -508,3 +512,14 @@ func copySessionWithoutStateAndEvents(sess *session) *session {
 }
 
 var _ Service = (*inMemoryService)(nil)
+
+func cloneRequestedCredentials(in map[string]authconsent.AuthConfig) map[string]authconsent.AuthConfig {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]authconsent.AuthConfig, len(in))
+	for k, v := range in {
+		out[k] = v.Clone()
+	}
+	return out
+}

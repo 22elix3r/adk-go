@@ -132,6 +132,26 @@ type OAuth2Auth struct {
 	AuthResponseURI string `json:"authResponseUri,omitempty"`
 }
 
+// Clone returns a deep copy. AuthConfig carries three pointers, so a value copy
+// shares the consent URL and nonce with the original; a store that keeps a
+// config beyond the call that handed it over clones it.
+func (c AuthConfig) Clone() AuthConfig {
+	out := c
+	if c.AuthScheme != nil {
+		scheme := *c.AuthScheme
+		out.AuthScheme = &scheme
+	}
+	if c.ExchangedAuthCredential != nil {
+		cred := *c.ExchangedAuthCredential
+		if cred.OAuth2 != nil {
+			oauth2 := *cred.OAuth2
+			cred.OAuth2 = &oauth2
+		}
+		out.ExchangedAuthCredential = &cred
+	}
+	return out
+}
+
 // OAuth2Consent builds the [AuthConfig] a tool passes to
 // agent.Context.RequestCredential for an interactive OAuth2 consent round-trip.
 // Its arguments are the fields of auth.ConsentRequiredError.

@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
-	"maps"
 	"slices"
 
 	"google.golang.org/genai"
@@ -216,11 +215,12 @@ func RequestCredentialRequestProcessor(ctx agent.InvocationContext, req *model.L
 				}
 				for _, functionCall := range calls {
 					if functionCall.ID == callID {
-						// Copy the call: functionCall points into a stored session event,
-						// and a tool or callback that edits its args in place would
-						// otherwise rewrite history. The confirmation twin copies too.
+						// Copy the call, args included to any depth: functionCall points
+						// into a stored session event, and a tool or callback that edits
+						// its args in place — a nested map as much as a top-level key —
+						// would otherwise rewrite history.
 						call := *functionCall
-						call.Args = maps.Clone(functionCall.Args)
+						call.Args = cloneArgs(functionCall.Args)
 						parts = append(parts, &genai.Part{FunctionCall: &call})
 						break
 					}
@@ -324,4 +324,32 @@ func decodeConsentResponse(funcResp *genai.FunctionResponse, eventID string) (au
 		return cfg, fmt.Errorf("credential response for event id %q: unmarshal: %w", eventID, err)
 	}
 	return cfg, nil
+}
+
+// cloneArgs deep-copies JSON-shaped tool arguments: maps and slices are
+// rebuilt, scalars are shared, which is what a value decoded from JSON holds.
+func cloneArgs(args map[string]any) map[string]any {
+	if args == nil {
+		return nil
+	}
+	return cloneJSONValue(args).(map[string]any)
+}
+
+func cloneJSONValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, val := range x {
+			out[k] = cloneJSONValue(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, val := range x {
+			out[i] = cloneJSONValue(val)
+		}
+		return out
+	default:
+		return v
+	}
 }

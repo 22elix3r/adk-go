@@ -162,3 +162,25 @@ func TestWireArgsAlwaysCarriesAuthScheme(t *testing.T) {
 		})
 	}
 }
+
+// TestAuthConfigCloneSharesNoPointers pins the deep copy a store relies on.
+// AuthConfig carries three pointers; a value copy shares all of them, so a
+// caller holding the original could rewrite a stored consent URL or nonce.
+func TestAuthConfigCloneSharesNoPointers(t *testing.T) {
+	orig := authconsent.OAuth2Consent("https://consent.example/auth", "n0nce", "key")
+	clone := orig.Clone()
+	orig.AuthScheme.Type = "changed"
+	orig.ExchangedAuthCredential.AuthType = "changed"
+	orig.ExchangedAuthCredential.OAuth2.AuthURI = "https://attacker.example/auth"
+	orig.ExchangedAuthCredential.OAuth2.Nonce = "changed"
+	if clone.AuthScheme.Type != authconsent.AuthTypeOAuth2 ||
+		clone.ExchangedAuthCredential.AuthType != authconsent.AuthTypeOAuth2 ||
+		clone.ExchangedAuthCredential.OAuth2.AuthURI != "https://consent.example/auth" ||
+		clone.ExchangedAuthCredential.OAuth2.Nonce != "n0nce" {
+		t.Errorf("Clone() shares state with the original: %+v / %+v", clone.AuthScheme, clone.ExchangedAuthCredential.OAuth2)
+	}
+	var zero authconsent.AuthConfig
+	if got := zero.Clone(); got.AuthScheme != nil || got.ExchangedAuthCredential != nil {
+		t.Errorf("Clone() of a zero config = %+v, want zero", got)
+	}
+}

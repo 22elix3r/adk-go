@@ -812,3 +812,37 @@ func TestInMemoryService_AppendEvent_CopiesRequestedCredentials(t *testing.T) {
 		t.Errorf("stored CredentialKey = %q, want %q", cfg.CredentialKey, "key-1")
 	}
 }
+
+// TestInMemoryService_AppendEvent_DeepCopiesRequestedCredentials is the nested
+// half of the copy above. AuthConfig carries pointers, so a map clone alone left
+// the stored consent URL and nonce writable through the config the caller kept.
+func TestInMemoryService_AppendEvent_DeepCopiesRequestedCredentials(t *testing.T) {
+	ctx := t.Context()
+	service := session.InMemoryService()
+
+	createResp, err := service.Create(ctx, &session.CreateRequest{AppName: "app", UserID: "user"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	sess := createResp.Session
+
+	cfg := authconsent.OAuth2Consent("https://consent.example/auth", "n0nce", "key-1")
+	event := &session.Event{ID: "c1", Author: "user"}
+	event.Actions.RequestedCredentials = map[string]authconsent.AuthConfig{"call-1": cfg}
+	if err := service.AppendEvent(ctx, sess, event); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	// Rewrite through the nested pointers the caller still holds.
+	cfg.ExchangedAuthCredential.OAuth2.AuthURI = "https://attacker.example/auth"
+	cfg.ExchangedAuthCredential.OAuth2.Nonce = "rewritten"
+
+	got, err := service.Get(ctx, &session.GetRequest{AppName: "app", UserID: "user", SessionID: sess.ID()})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	stored := got.Session.Events().At(0).Actions.RequestedCredentials["call-1"]
+	if o := stored.ExchangedAuthCredential.OAuth2; o.AuthURI != "https://consent.example/auth" || o.Nonce != "n0nce" {
+		t.Errorf("stored consent = %+v, want the appended URL and nonce: the caller's nested write reached the store", o)
+	}
+}
