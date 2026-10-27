@@ -103,6 +103,11 @@ func TestDecodeJSONL(t *testing.T) {
 			wantTexts: []string{"A", "B"},
 		},
 		{
+			name:      "whitespace-only line is skipped",
+			chunks:    chunksOf(lineA + " \t\n" + lineB),
+			wantTexts: []string{"A", "B"},
+		},
+		{
 			name:      "error line ends the stream",
 			chunks:    chunksOf(lineA + `{"error":"boom"}` + "\n" + lineB),
 			wantTexts: []string{"A"},
@@ -170,7 +175,11 @@ func TestDecodeJSONLPropagatesChunkError(t *testing.T) {
 		if !yield([]byte(lineA), nil) {
 			return
 		}
-		yield(nil, boom)
+		if !yield(nil, boom) {
+			return
+		}
+		// Reached only if decodeJSONL keeps reading after the error.
+		yield([]byte(lineB), nil)
 	}
 	got, err := collect(t, decodeJSONL(chunks))
 	if !errors.Is(err, boom) {
