@@ -68,7 +68,7 @@ func (c *Client) StreamQuery(ctx context.Context, req StreamQueryRequest) iter.S
 					return
 				}
 				if err != nil {
-					yield(nil, err)
+					yield(nil, fmt.Errorf("agentengine: stream query %s: %w", c.name, err))
 					return
 				}
 				if !yield(body.GetData(), nil) {
