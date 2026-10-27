@@ -225,3 +225,34 @@ func TestStreamQueryEarlyBreakCancelsStream(t *testing.T) {
 		t.Fatal("server stream context still live after the consumer stopped")
 	}
 }
+
+func TestNewCallerEndpointOverridesRegional(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen() failed: %v", err)
+	}
+	server := grpc.NewServer()
+	aiplatformpb.RegisterReasoningEngineExecutionServiceServer(server, &fakeExecServer{chunks: []string{lineA}})
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(server.Stop)
+
+	// Bounded so a client still pointed at the regional endpoint fails fast.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	c, err := New(ctx, Config{Project: "p", Location: "us-central1", ReasoningEngine: "1"},
+		option.WithEndpoint(lis.Addr().String()),
+		option.WithoutAuthentication(),
+		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())))
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	events, err := collect(t, c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}))
+	if err != nil {
+		t.Fatalf("StreamQuery() error = %v, want the local server to answer", err)
+	}
+	if diff := cmp.Diff([]string{"A"}, texts(events)); diff != "" {
+		t.Errorf("(-want +got):\n%s", diff)
+	}
+}
