@@ -154,6 +154,16 @@ func TestDecodeJSONLFields(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONLNullContent(t *testing.T) {
+	got, err := collect(t, decodeJSONL(chunksOf(`{"author":"root","content":null}`+"\n")))
+	if err != nil || len(got) != 1 {
+		t.Fatalf("decodeJSONL() = %d events, %v; want 1, nil", len(got), err)
+	}
+	if got[0].Content != nil {
+		t.Errorf("Content = %+v, want nil for \"content\": null", got[0].Content)
+	}
+}
+
 func TestDecodeJSONLPropagatesChunkError(t *testing.T) {
 	boom := errors.New("transport broke")
 	chunks := func(yield func([]byte, error) bool) {
