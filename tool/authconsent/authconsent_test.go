@@ -131,3 +131,34 @@ func TestFunctionCallNameIsThePythonName(t *testing.T) {
 		t.Errorf("AuthConfigArg = %q, want %q", authconsent.AuthConfigArg, "authConfig")
 	}
 }
+
+// TestWireArgsAlwaysCarriesAuthScheme pins the one field adk-python's AuthConfig
+// requires. A tool that builds its config by hand rather than through
+// OAuth2Consent must still produce an event an adk-python reader accepts, so
+// WireArgs fills the scheme type from the credential type, defaulting to oauth2.
+func TestWireArgsAlwaysCarriesAuthScheme(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  authconsent.AuthConfig
+		want string
+	}{
+		{name: "no scheme", cfg: authconsent.AuthConfig{ExchangedAuthCredential: &authconsent.AuthCredential{
+			AuthType: authconsent.AuthTypeOAuth2, OAuth2: &authconsent.OAuth2Auth{AuthURI: "https://c/a"}}}, want: "oauth2"},
+		{name: "empty scheme type", cfg: authconsent.AuthConfig{AuthScheme: &authconsent.AuthScheme{}, ExchangedAuthCredential: &authconsent.AuthCredential{
+			AuthType: authconsent.AuthTypeOAuth2}}, want: "oauth2"},
+		{name: "scheme given", cfg: authconsent.OAuth2Consent("https://c/a", "n", "k"), want: "oauth2"},
+		{name: "zero config", cfg: authconsent.AuthConfig{}, want: "oauth2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args, err := authconsent.WireArgs("call-1", tc.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ac, _ := args[authconsent.AuthConfigArg].(map[string]any)
+			scheme, _ := ac["authScheme"].(map[string]any)
+			if got, _ := scheme["type"].(string); got != tc.want {
+				t.Errorf("authConfig.authScheme.type = %q, want %q (authConfig = %v)", got, tc.want, ac)
+			}
+		})
+	}
+}

@@ -77,7 +77,8 @@ type AuthConfig struct {
 	// scheme type, but the field is not optional: adk-python's AuthConfig
 	// requires auth_scheme, so omitting it makes an adk-python reader reject the
 	// whole event rather than just the field — including on the Vertex session
-	// store, which both runtimes read from.
+	// store, which both runtimes read from. [WireArgs] fills it in when a
+	// config arrives without one.
 	AuthScheme *AuthScheme `json:"authScheme,omitempty"`
 	// ExchangedAuthCredential carries the consent URL on the way out and the
 	// client's authorization response on the way back.
@@ -158,7 +159,20 @@ func OAuth2Consent(authURI, nonce, credentialKey string) AuthConfig {
 // (server/agentengine/internal/helper/encode.go), so a struct here reaches the
 // client as exchanged_auth_credential.oauth2.auth_uri, which no ADK client
 // looks for.
+//
+// The scheme is filled in when cfg carries none: adk-python's AuthConfig
+// requires auth_scheme and rejects the whole event without it, and a tool that
+// builds its config by hand rather than through [OAuth2Consent] would otherwise
+// emit an event every adk-python reader, including the Vertex session store,
+// refuses. The type comes from the credential's AuthType, defaulting to oauth2.
 func WireArgs(functionCallID string, cfg AuthConfig) (map[string]any, error) {
+	if cfg.AuthScheme == nil || cfg.AuthScheme.Type == "" {
+		scheme := AuthScheme{Type: AuthTypeOAuth2}
+		if cred := cfg.ExchangedAuthCredential; cred != nil && cred.AuthType != "" {
+			scheme.Type = cred.AuthType
+		}
+		cfg.AuthScheme = &scheme
+	}
 	b, err := json.Marshal(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("authconsent: marshal auth config: %w", err)
