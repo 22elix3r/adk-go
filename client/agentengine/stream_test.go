@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"cloud.google.com/go/aiplatform/apiv1beta1/aiplatformpb"
 	"github.com/google/go-cmp/cmp"
@@ -43,7 +44,10 @@ type fakeExecServer struct {
 	// block, when non-nil, makes the server wait before sending anything, so a
 	// test can cancel the client context mid-stream.
 	block chan struct{}
-	err   error
+	// ctxDone, when non-nil, makes the server hold the stream open after the
+	// scripted chunks and close ctxDone once the client cancels it.
+	ctxDone chan struct{}
+	err     error
 }
 
 func (f *fakeExecServer) StreamQueryReasoningEngine(req *aiplatformpb.StreamQueryReasoningEngineRequest, stream aiplatformpb.ReasoningEngineExecutionService_StreamQueryReasoningEngineServer) error {
@@ -61,6 +65,10 @@ func (f *fakeExecServer) StreamQueryReasoningEngine(req *aiplatformpb.StreamQuer
 		if err := stream.Send(&httpbody.HttpBody{ContentType: "application/json", Data: []byte(c)}); err != nil {
 			return err
 		}
+	}
+	if f.ctxDone != nil {
+		<-stream.Context().Done()
+		close(f.ctxDone)
 	}
 	return f.err
 }
@@ -199,5 +207,21 @@ func TestStreamQueryRejectsNilMessage(t *testing.T) {
 	_, err := collect(t, c.StreamQuery(t.Context(), StreamQueryRequest{UserID: "u", SessionID: "s"}))
 	if err == nil {
 		t.Fatal("nil Message accepted, want error")
+	}
+}
+
+func TestStreamQueryEarlyBreakCancelsStream(t *testing.T) {
+	srv := &fakeExecServer{chunks: []string{lineA}, ctxDone: make(chan struct{})}
+	c := newFakeClient(t, srv)
+	for _, err := range c.StreamQuery(t.Context(), StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		break
+	}
+	select {
+	case <-srv.ctxDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server stream context still live after the consumer stopped")
 	}
 }

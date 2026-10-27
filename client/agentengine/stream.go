@@ -47,6 +47,9 @@ type StreamQueryRequest struct {
 // so callers do not create sessions up front.
 func (c *Client) StreamQuery(ctx context.Context, req StreamQueryRequest) iter.Seq2[*Event, error] {
 	return func(yield func(*Event, error) bool) {
+		// An abandoned GAPIC stream stays open until its ctx ends.
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
 		pbReq, err := encodeRequest(c.name, req)
 		if err != nil {
 			yield(nil, err)
