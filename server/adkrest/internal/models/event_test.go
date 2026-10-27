@@ -15,6 +15,7 @@
 package models_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -112,5 +113,37 @@ func TestCompactionIsReadOnlyOverREST(t *testing.T) {
 	}
 	if !out.Actions.Compaction.EndTimestamp.Equal(record.EndTimestamp) {
 		t.Errorf("EndTimestamp = %v, want %v", out.Actions.Compaction.EndTimestamp, record.EndTimestamp)
+	}
+}
+
+// TestRequestedCredentialsRESTKey pins the consent request's key on the REST
+// event model, which an ADK client reads to find a pending consent. It is
+// adk-python's requested_auth_configs and must not drift from the session
+// event's key.
+func TestRequestedCredentialsRESTKey(t *testing.T) {
+	ev := &session.Event{ID: "e1", Author: "agent"}
+	ev.Actions.RequestedCredentials = map[string]authconsent.AuthConfig{
+		"call-1": authconsent.OAuth2Consent("https://consent.example/auth", "n0nce", "key-1"),
+	}
+	b, err := json.Marshal(models.FromSessionEvent(*ev))
+	if err != nil {
+		t.Fatalf("Marshal() failed: %v", err)
+	}
+	var m struct {
+		Actions struct {
+			RequestedAuthConfigs map[string]struct {
+				ExchangedAuthCredential struct {
+					OAuth2 struct {
+						AuthURI string `json:"authUri"`
+					} `json:"oauth2"`
+				} `json:"exchangedAuthCredential"`
+			} `json:"requestedAuthConfigs"`
+		} `json:"actions"`
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("Unmarshal() failed: %v", err)
+	}
+	if got := m.Actions.RequestedAuthConfigs["call-1"].ExchangedAuthCredential.OAuth2.AuthURI; got != "https://consent.example/auth" {
+		t.Errorf("actions.requestedAuthConfigs.call-1.exchangedAuthCredential.oauth2.authUri = %q, want the consent URL; raw: %s", got, b)
 	}
 }

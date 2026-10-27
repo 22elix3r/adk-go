@@ -520,3 +520,24 @@ func TestPreflightRefusesWhenConfirmationProviderRequires(t *testing.T) {
 		t.Errorf("RequestCredential called %d times and CallTool ran %d times, want 0 and 0", len(ctx.requested), client.calls)
 	}
 }
+
+// TestPreflightUnwrapsConsentError pins that a provider may return the consent
+// error wrapped, as the CredentialProvider doc allows, and the preflight still
+// pauses rather than reporting a resolution failure.
+func TestPreflightUnwrapsConsentError(t *testing.T) {
+	client := &countingClient{}
+	consent := &auth.ConsentRequiredError{AuthURI: "https://consent.example/auth", Key: "k"}
+	tl := newCredTool(client, providerReturning(nil, fmt.Errorf("provider: %w", consent)))
+	ctx := &consentContext{}
+
+	_, err := tl.Run(ctx, map[string]any{})
+	if !errors.Is(err, tool.ErrCredentialRequired) {
+		t.Fatalf("Run() error = %v, want ErrCredentialRequired for a wrapped consent error", err)
+	}
+	if len(ctx.requested) != 1 || ctx.requested[0].CredentialKey != "k" {
+		t.Errorf("RequestCredential got %+v, want one request under key k", ctx.requested)
+	}
+	if client.calls != 0 {
+		t.Errorf("MCP CallTool ran %d times, want 0", client.calls)
+	}
+}

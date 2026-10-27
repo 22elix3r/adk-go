@@ -610,17 +610,19 @@ func TestSelectSlidingWindowSurvivesBlockedHead(t *testing.T) {
 			want: []string{"a", "b"},
 		},
 		{
-			// The tail must not be compacted while the consent that unblocks the
-			// head is still open: the resumed tool response would then answer a
-			// call that has been summarized away.
-			name:     "tail answering a head consent is not compacted",
+			// Once the resumed tool response has answered the paused call, the
+			// consent obligation is closed and the head compacts with the rest.
+			// Three invocations, so the window is actually selected: with two the
+			// interval check returns nil before any obligation is weighed.
+			name:     "head consent answered by the tail compacts with it",
 			interval: 3,
 			events: []*session.Event{
 				consentEvent("stuck", "inv1", 1, "c1"),
 				textEvent("a", "inv2", 2, "q2"),
 				responseEvent("b", "inv2", 3, "c1"),
+				textEvent("c", "inv3", 4, "q3"),
 			},
-			want: nil,
+			want: []string{"stuck", "a", "b", "c"},
 		},
 		{
 			name:     "unanswered consent at the head is stepped over",

@@ -293,8 +293,13 @@ func TestRequestCredentialIgnoresForeignToolCall(t *testing.T) {
 // id to different tool calls there is no way to know which one the user saw.
 // Resuming either would run a tool behind a consent granted for something else.
 func TestRequestCredentialRefusesConflictingBinding(t *testing.T) {
+	other := pausedCallEvent(credAgentName)
+	other.Content.Parts[0].FunctionCall.ID = "a-different-call"
 	events := []*session.Event{
 		pausedCallEvent(credAgentName),
+		// Both targets exist as paused calls, so a guard that merely let the
+		// later binding win would resume one of them and fail this test.
+		other,
 		consentRequestEvent(credAgentName, credConsentFC, credPausedCall, "key"),
 		consentRequestEvent(credAgentName, credConsentFC, "a-different-call", "key"),
 		consentReplyEvent(credConsentFC, clientReply("https://app.example/cb", "key")),
@@ -769,5 +774,33 @@ func TestRequestCredentialDoesNotAliasNestedStoredArgs(t *testing.T) {
 	}
 	if got := paused.Content.Parts[0].FunctionCall.Args["filter"].(map[string]any)["q"]; got != "hi" {
 		t.Errorf("stored call args[filter][q] = %v after the resume, want %q unchanged", got, "hi")
+	}
+}
+
+// TestRequestCredentialReportsUndecodableReply pins the error path of the
+// reply decoder: a "response" key holding something other than a JSON string
+// is neither of the two encodings a client may use, and the processor reports
+// it rather than resuming with an empty consent response.
+func TestRequestCredentialReportsUndecodableReply(t *testing.T) {
+	reply := consentReplyEvent(credConsentFC, clientReply("https://app.example/cb", "key"))
+	reply.Content.Parts[0].FunctionResponse.Response = map[string]any{"response": 42}
+	events := []*session.Event{
+		pausedCallEvent(credAgentName),
+		consentRequestEvent(credAgentName, credConsentFC, credPausedCall, "key"),
+		reply,
+	}
+	agnt, echo, tools := newConsentAgent(t)
+	ctx := createInvocationContext(t, agnt, &fakeSession{events: events})
+	var gotErr error
+	for _, err := range llminternal.RequestCredentialRequestProcessor(ctx, &model.LLMRequest{}, &llminternal.Flow{Tools: tools}) {
+		if err != nil {
+			gotErr = err
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("processor yielded no error for a reply whose \"response\" is not a string")
+	}
+	if echo.runs != 0 {
+		t.Errorf("tool ran %d times, want 0", echo.runs)
 	}
 }

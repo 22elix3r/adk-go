@@ -567,6 +567,12 @@ func TestInMemoryService_AppendEvent_ConcurrentActionMapWrites(t *testing.T) {
 			},
 		},
 		{
+			name: "RequestedCredentials",
+			write: func(event *session.Event) {
+				event.Actions.RequestedCredentials["injected"] = authconsent.OAuth2Consent("https://consent.example/auth", "n", "k")
+			},
+		},
+		{
 			name: "StateDelta",
 			write: func(event *session.Event) {
 				event.Actions.StateDelta["injected"] = 1
@@ -627,6 +633,7 @@ func TestInMemoryService_AppendEvent_ConcurrentActionMapWrites(t *testing.T) {
 							StateDelta:                 delta,
 							ArtifactDelta:              map[string]int64{"a": int64(i)},
 							RequestedToolConfirmations: map[string]toolconfirmation.ToolConfirmation{"call": {}},
+							RequestedCredentials:       map[string]authconsent.AuthConfig{"call": authconsent.OAuth2Consent("https://consent.example/auth", "n", "k")},
 						},
 					}
 					if err := svc.AppendEvent(ctx, live, ev); err != nil {
