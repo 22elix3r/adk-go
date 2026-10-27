@@ -1,0 +1,203 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package agentengine
+
+import (
+	"context"
+	"net"
+	"strings"
+	"sync"
+	"testing"
+
+	"cloud.google.com/go/aiplatform/apiv1beta1/aiplatformpb"
+	"github.com/google/go-cmp/cmp"
+	"google.golang.org/api/option"
+	"google.golang.org/genai"
+	"google.golang.org/genproto/googleapis/api/httpbody"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
+)
+
+// fakeExecServer records the last request and replays scripted chunks.
+type fakeExecServer struct {
+	aiplatformpb.UnimplementedReasoningEngineExecutionServiceServer
+
+	mu      sync.Mutex
+	lastReq *aiplatformpb.StreamQueryReasoningEngineRequest
+	chunks  []string
+	// block, when non-nil, makes the server wait before sending anything, so a
+	// test can cancel the client context mid-stream.
+	block chan struct{}
+	err   error
+}
+
+func (f *fakeExecServer) StreamQueryReasoningEngine(req *aiplatformpb.StreamQueryReasoningEngineRequest, stream aiplatformpb.ReasoningEngineExecutionService_StreamQueryReasoningEngineServer) error {
+	f.mu.Lock()
+	f.lastReq = req
+	f.mu.Unlock()
+	if f.block != nil {
+		select {
+		case <-f.block:
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		}
+	}
+	for _, c := range f.chunks {
+		if err := stream.Send(&httpbody.HttpBody{ContentType: "application/json", Data: []byte(c)}); err != nil {
+			return err
+		}
+	}
+	return f.err
+}
+
+func (f *fakeExecServer) request() *aiplatformpb.StreamQueryReasoningEngineRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastReq
+}
+
+func newFakeClient(t *testing.T, srv *fakeExecServer) *Client {
+	t.Helper()
+	listener := bufconn.Listen(1024 * 1024)
+	server := grpc.NewServer()
+	aiplatformpb.RegisterReasoningEngineExecutionServiceServer(server, srv)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+	})
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	c, err := New(t.Context(), Config{Project: "p", Location: "us-central1", ReasoningEngine: "123"},
+		option.WithGRPCConn(conn), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+func TestStreamQueryRequestShape(t *testing.T) {
+	srv := &fakeExecServer{chunks: []string{lineA}}
+	c := newFakeClient(t, srv)
+
+	msg := genai.NewContentFromText("hello", genai.RoleUser)
+	events, err := collect(t, c.StreamQuery(t.Context(), StreamQueryRequest{UserID: "u1", SessionID: "s1", Message: msg}))
+	if err != nil || len(events) != 1 {
+		t.Fatalf("StreamQuery() = %d events, %v; want 1, nil", len(events), err)
+	}
+
+	req := srv.request()
+	if req.GetName() != "projects/p/locations/us-central1/reasoningEngines/123" {
+		t.Errorf("Name = %q", req.GetName())
+	}
+	if req.GetClassMethod() != "async_stream_query" {
+		t.Errorf("ClassMethod = %q, want async_stream_query", req.GetClassMethod())
+	}
+	in := req.GetInput().AsMap()
+	if in["user_id"] != "u1" || in["session_id"] != "s1" {
+		t.Errorf("input ids = %v / %v", in["user_id"], in["session_id"])
+	}
+	wantMsg := map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}
+	if diff := cmp.Diff(wantMsg, in["message"]); diff != "" {
+		t.Errorf("input.message mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestStreamQueryCustomClassMethod(t *testing.T) {
+	srv := &fakeExecServer{}
+	c := newFakeClient(t, srv)
+	if _, err := collect(t, c.StreamQuery(t.Context(), StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser), ClassMethod: "stream_query"})); err != nil {
+		t.Fatal(err)
+	}
+	if got := srv.request().GetClassMethod(); got != "stream_query" {
+		t.Errorf("ClassMethod = %q, want stream_query", got)
+	}
+}
+
+func TestStreamQueryReassemblesAcrossChunks(t *testing.T) {
+	srv := &fakeExecServer{chunks: []string{lineA[:15], lineA[15:] + lineB[:3], lineB[3:]}}
+	c := newFakeClient(t, srv)
+	events, err := collect(t, c.StreamQuery(t.Context(), StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]string{"A", "B"}, texts(events)); diff != "" {
+		t.Errorf("(-want +got):\n%s", diff)
+	}
+}
+
+func TestStreamQueryRemoteErrorLine(t *testing.T) {
+	srv := &fakeExecServer{chunks: []string{lineA + `{"error":"model quota"}` + "\n"}}
+	c := newFakeClient(t, srv)
+	events, err := collect(t, c.StreamQuery(t.Context(), StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}))
+	if err == nil || !strings.Contains(err.Error(), "model quota") {
+		t.Fatalf("error = %v, want remote error", err)
+	}
+	if len(events) != 1 {
+		t.Errorf("got %d events before the error, want 1", len(events))
+	}
+}
+
+func TestStreamQueryGRPCStatusError(t *testing.T) {
+	srv := &fakeExecServer{err: status.Error(codes.PermissionDenied, "no aiplatform.user")}
+	c := newFakeClient(t, srv)
+	_, err := collect(t, c.StreamQuery(t.Context(), StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}))
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("error = %v, want PermissionDenied status", err)
+	}
+}
+
+func TestStreamQueryEmptyStream(t *testing.T) {
+	c := newFakeClient(t, &fakeExecServer{})
+	events, err := collect(t, c.StreamQuery(t.Context(), StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}))
+	if err != nil || len(events) != 0 {
+		t.Fatalf("got %d events, %v; want 0, nil", len(events), err)
+	}
+}
+
+func TestStreamQueryCancelledContext(t *testing.T) {
+	srv := &fakeExecServer{block: make(chan struct{}), chunks: []string{lineA}}
+	c := newFakeClient(t, srv)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := collect(t, c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}))
+		done <- err
+	}()
+	cancel()
+	err := <-done
+	if status.Code(err) != codes.Canceled && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("error = %v, want cancellation", err)
+	}
+}
+
+func TestStreamQueryRejectsNilMessage(t *testing.T) {
+	c := newFakeClient(t, &fakeExecServer{})
+	_, err := collect(t, c.StreamQuery(t.Context(), StreamQueryRequest{UserID: "u", SessionID: "s"}))
+	if err == nil {
+		t.Fatal("nil Message accepted, want error")
+	}
+}
