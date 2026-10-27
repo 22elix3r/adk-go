@@ -34,7 +34,7 @@ func ExampleClient_StreamQuery() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	events := client.StreamQuery(ctx, agentengine.StreamQueryRequest{
 		UserID:    "user-1",
