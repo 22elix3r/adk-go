@@ -92,8 +92,8 @@ func decodeLine(line []byte) (*Event, error) {
 	ev.Author, _ = raw["author"].(string)
 	ev.Partial, _ = raw["partial"].(bool)
 	if c, ok := raw["content"]; ok && c != nil {
-		// genai's JSON tags are camelCase, but the adk-go server emits
-		// snake_case keys, so normalize before decoding.
+		// genai's JSON tags are camelCase, but servers emit snake_case keys,
+		// so normalize before decoding.
 		b, err := json.Marshal(camelizeKeys(c))
 		if err != nil {
 			return nil, fmt.Errorf("agentengine: re-encoding content: %w", err)
@@ -112,9 +112,10 @@ func decodeLine(line []byte) (*Event, error) {
 var userKeyFields = map[string]bool{"args": true, "response": true, "partMetadata": true}
 
 // camelizeKeys renames snake_case object keys to the lowerCamelCase names in
-// genai's JSON tags. The adk-go server writes events with snake_case field
-// names, while Python agents already emit camelCase, which passes through
-// unchanged. Values of userKeyFields are copied without descending into them.
+// genai's JSON tags. Both the adk-go server (helper.ConvertSnake) and Python
+// agents (model_dump_json without by_alias) emit snake_case keys. camelCase
+// input passes through unchanged. Values of userKeyFields are copied without
+// descending into them.
 func camelizeKeys(v any) any {
 	switch v := v.(type) {
 	case map[string]any:

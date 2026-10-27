@@ -212,22 +212,22 @@ func TestDecodeJSONLStopsWhenConsumerStops(t *testing.T) {
 }
 
 func TestDecodeJSONLPartFieldCasing(t *testing.T) {
-	// The adk-go server writes snake_case keys and Python agents write
-	// camelCase. Both must decode to the same parts, and keys inside args,
+	// The adk-go server and Python agents both write snake_case keys, and
+	// camelCase input must decode to the same parts. Keys inside args,
 	// response and partMetadata are user data that must stay as written.
 	tests := []struct {
 		name  string
 		parts string
 	}{
 		{
-			name: "snake_case from the adk-go server",
+			name: "snake_case from adk-go and Python servers",
 			parts: `[{"function_call":{"id":"c1","name":"lookup","args":{"user_id":"U1","nested":{"some_key":1}}}},` +
 				`{"function_response":{"name":"lookup","response":{"status_code":200}}},` +
 				`{"inline_data":{"mime_type":"image/png","data":"AQID"}},` +
 				`{"text":"hi","thought_signature":"AQ==","part_metadata":{"source_file":"x"}}]`,
 		},
 		{
-			name: "camelCase from Python agents",
+			name: "camelCase input passes through unchanged",
 			parts: `[{"functionCall":{"id":"c1","name":"lookup","args":{"user_id":"U1","nested":{"some_key":1}}}},` +
 				`{"functionResponse":{"name":"lookup","response":{"status_code":200}}},` +
 				`{"inlineData":{"mimeType":"image/png","data":"AQID"}},` +
