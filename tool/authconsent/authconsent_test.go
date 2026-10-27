@@ -147,6 +147,8 @@ func TestWireArgsAlwaysCarriesAuthScheme(t *testing.T) {
 		{name: "empty scheme type", cfg: authconsent.AuthConfig{AuthScheme: &authconsent.AuthScheme{}, ExchangedAuthCredential: &authconsent.AuthCredential{
 			AuthType: authconsent.AuthTypeOAuth2}}, want: "oauth2"},
 		{name: "scheme given", cfg: authconsent.OAuth2Consent("https://c/a", "n", "k"), want: "oauth2"},
+		{name: "credential without type", cfg: authconsent.AuthConfig{ExchangedAuthCredential: &authconsent.AuthCredential{
+			OAuth2: &authconsent.OAuth2Auth{AuthURI: "https://c/a"}}}, want: "oauth2"},
 		{name: "zero config", cfg: authconsent.AuthConfig{}, want: "oauth2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

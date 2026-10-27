@@ -804,3 +804,47 @@ func TestRequestCredentialReportsUndecodableReply(t *testing.T) {
 		t.Errorf("tool ran %d times, want 0", echo.runs)
 	}
 }
+
+// TestRequestCredentialSurvivesMissingTargetCall pins the scan's end: a consent
+// answered for a call that is not in the history (a trimmed session, say)
+// resumes nothing and does not run off the start of the events.
+func TestRequestCredentialSurvivesMissingTargetCall(t *testing.T) {
+	events := []*session.Event{
+		consentRequestEvent(credAgentName, credConsentFC, "never-recorded", "key"),
+		consentReplyEvent(credConsentFC, clientReply("https://app.example/cb", "key")),
+	}
+	got, echo := runCredentialProcessor(t, events)
+	if echo.runs != 0 || len(got) != 0 {
+		t.Errorf("tool ran %d times and processor yielded %d events, want 0 and 0", echo.runs, len(got))
+	}
+}
+
+// TestRequestCredentialStopsWhenConsumerStops pins that a consumer that stops
+// after the first resumed batch is honored: no further batch is dispatched
+// behind its back.
+func TestRequestCredentialStopsWhenConsumerStops(t *testing.T) {
+	x := pausedCallEvent(credAgentName)
+	y := pausedCallEvent(credAgentName)
+	y.Content.Parts[0].FunctionCall.ID = "paused-Y"
+	reply := consentReplyEvent("ccX", clientReply("https://app.example/cb", ""))
+	reply.Content.Parts = append(reply.Content.Parts, consentReplyEvent("ccY", clientReply("https://app.example/cb", "")).Content.Parts...)
+	events := []*session.Event{
+		x,
+		consentRequestEvent(credAgentName, "ccX", credPausedCall, "kx"),
+		{Author: "user", LLMResponse: model.LLMResponse{Content: &genai.Content{Parts: []*genai.Part{genai.NewPartFromText("later")}}}},
+		y,
+		consentRequestEvent(credAgentName, "ccY", "paused-Y", "ky"),
+		reply,
+	}
+	agnt, echo, tools := newConsentAgent(t)
+	ctx := createInvocationContext(t, agnt, &fakeSession{events: events})
+	for _, err := range llminternal.RequestCredentialRequestProcessor(ctx, &model.LLMRequest{}, &llminternal.Flow{Tools: tools}) {
+		if err != nil {
+			t.Fatalf("RequestCredentialRequestProcessor() error = %v", err)
+		}
+		break
+	}
+	if echo.runs != 1 {
+		t.Errorf("tool ran %d times after the consumer stopped at the first batch, want 1", echo.runs)
+	}
+}

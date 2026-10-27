@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -540,4 +541,100 @@ func TestPreflightUnwrapsConsentError(t *testing.T) {
 	if client.calls != 0 {
 		t.Errorf("MCP CallTool ran %d times, want 0", client.calls)
 	}
+}
+
+// TestToolsFailsOnTypedNilConsentErrorAtListing pins that the transport treats
+// a typed-nil *ConsentRequiredError the way the preflight does: as an ordinary
+// resolution failure, not as consent pending. Listing fails with it.
+func TestToolsFailsOnTypedNilConsentErrorAtListing(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "listing", Version: "v1"}, nil)
+	srv := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	t.Cleanup(srv.Close)
+	var typedNil *auth.ConsentRequiredError
+	ts, err := New(Config{Endpoint: srv.URL, Auth: providerReturning(nil, typedNil)})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = ts.(*set).Close() })
+	if _, err := ts.Tools(readonlyTestContext(t)); err == nil {
+		t.Fatal("Tools() error = nil, want a typed-nil consent error to fail listing rather than pass as pending consent")
+	}
+}
+
+// refreshingProvider is a provider whose credential can be rejected and
+// refreshed, recording the refreshes it was asked for.
+type refreshingProvider struct {
+	mu       sync.Mutex
+	consent  bool
+	token    string
+	refreshs int
+}
+
+func (p *refreshingProvider) Credential(context.Context) (auth.Credential, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.consent {
+		return nil, &auth.ConsentRequiredError{AuthURI: "https://consent.example/auth"}
+	}
+	return auth.BearerCredential{Token: p.token}, nil
+}
+
+func (p *refreshingProvider) Refresh(context.Context, auth.Credential) (auth.Credential, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.refreshs++
+	p.token = "fresh"
+	return auth.BearerCredential{Token: p.token}, nil
+}
+
+// TestListingRefreshForwardsOnlyWithACredential pins the transport wrapper's
+// refresh behavior: a 401 on a request that carried a stale credential is
+// refreshed through the provider and retried, while a 401 on a request that
+// went out with no credential, because consent is pending, is not: there is
+// nothing to refresh, and the provider's Refresh must not be asked.
+func TestListingRefreshForwardsOnlyWithACredential(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "listing", Version: "v1"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "cred_tool"}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, struct{}, error) {
+		return &mcp.CallToolResult{}, struct{}{}, nil
+	})
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer fresh" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	t.Run("stale credential is refreshed", func(t *testing.T) {
+		p := &refreshingProvider{token: "stale"}
+		ts, err := New(Config{Endpoint: srv.URL, Auth: p})
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		t.Cleanup(func() { _ = ts.(*set).Close() })
+		tools, err := ts.Tools(readonlyTestContext(t))
+		if err != nil || len(tools) != 1 {
+			t.Fatalf("Tools() = %v, %v; want the tool after one refresh", tools, err)
+		}
+		if p.refreshs == 0 {
+			t.Error("provider.Refresh was never called, yet the stale credential was rejected")
+		}
+	})
+
+	t.Run("pending consent is not refreshed", func(t *testing.T) {
+		p := &refreshingProvider{consent: true}
+		ts, err := New(Config{Endpoint: srv.URL, Auth: p})
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		t.Cleanup(func() { _ = ts.(*set).Close() })
+		if _, err := ts.Tools(readonlyTestContext(t)); err == nil {
+			t.Fatal("Tools() error = nil, want the server's 401 to surface while consent is pending")
+		}
+		if p.refreshs != 0 {
+			t.Errorf("provider.Refresh was called %d times with no credential to refresh", p.refreshs)
+		}
+	})
 }
