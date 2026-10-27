@@ -476,3 +476,47 @@ func readonlyTestContext(t *testing.T) agent.ReadonlyContext {
 	t.Helper()
 	return icontext.NewReadonlyContext(icontext.NewInvocationContext(t.Context(), icontext.InvocationContextParams{}))
 }
+
+// TestPreflightPausesWhenConfirmationProviderDeclines pins that the refusal of
+// consent-plus-confirmation is decided per call, by what the confirmation
+// provider answered for this call, not by the provider merely being configured.
+// A toolset whose provider gates only destructive tools must still be able to
+// pause a read-only call for consent.
+func TestPreflightPausesWhenConfirmationProviderDeclines(t *testing.T) {
+	client := &countingClient{}
+	consent := &auth.ConsentRequiredError{AuthURI: "https://consent.example/auth", Key: "k"}
+	tl := newCredTool(client, providerReturning(nil, consent))
+	tl.requireConfirmationProvider = func(string, any) bool { return false }
+	ctx := &consentContext{}
+
+	_, err := tl.Run(ctx, map[string]any{})
+	if !errors.Is(err, tool.ErrCredentialRequired) {
+		t.Fatalf("Run() error = %v, want ErrCredentialRequired: this call needs no confirmation, so consent alone is one round-trip", err)
+	}
+	if len(ctx.requested) != 1 {
+		t.Errorf("RequestCredential called %d times, want 1", len(ctx.requested))
+	}
+	if client.calls != 0 {
+		t.Errorf("MCP CallTool ran %d times, want 0", client.calls)
+	}
+}
+
+// TestPreflightRefusesWhenConfirmationProviderRequires is the other half: when
+// the provider says this call needs confirmation, the confirmation prompt goes
+// out first and the consent preflight on the confirmed resume refuses the
+// second round-trip, as with the static flag.
+func TestPreflightRefusesWhenConfirmationProviderRequires(t *testing.T) {
+	client := &countingClient{}
+	consent := &auth.ConsentRequiredError{AuthURI: "https://consent.example/auth", Key: "k"}
+	tl := newCredTool(client, providerReturning(nil, consent))
+	tl.requireConfirmationProvider = func(string, any) bool { return true }
+	ctx := &confirmedContext{confirmation: &toolconfirmation.ToolConfirmation{Confirmed: true}}
+
+	_, err := tl.Run(ctx, map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("Run() error = %v, want the unsupported-combination error", err)
+	}
+	if len(ctx.requested) != 0 || client.calls != 0 {
+		t.Errorf("RequestCredential called %d times and CallTool ran %d times, want 0 and 0", len(ctx.requested), client.calls)
+	}
+}

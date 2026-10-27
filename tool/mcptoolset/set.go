@@ -243,11 +243,12 @@ type Config struct {
 	// needs a credential that resolves without consent — non-interactive, or
 	// already consented and cached.
 	//
-	// An interactive provider also cannot be combined with RequireConfirmation
-	// or RequireConfirmationProvider on the same toolset: two human-in-the-loop
-	// round-trips on one call are not supported, and a call that needs both
-	// fails with an error saying so rather than pausing on a prompt no client
-	// receives.
+	// An interactive provider cannot be combined with a confirmation on the
+	// same call: two human-in-the-loop round-trips on one call are not
+	// supported, and a call that needs both fails with an error saying so
+	// rather than pausing on a prompt no client receives. With
+	// RequireConfirmationProvider this is decided per call, so a provider that
+	// gates only some tools leaves the others free to pause for consent.
 	Auth auth.CredentialProvider
 
 	// Deprecated: use tool.FilterToolset instead.

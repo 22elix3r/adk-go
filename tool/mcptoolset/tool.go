@@ -106,10 +106,14 @@ func (t *mcpTool) Declaration() *genai.FunctionDeclaration {
 }
 
 func (t *mcpTool) Run(ctx agent.Context, args any) (map[string]any, error) {
+	// Whether this call went, or is going, through a confirmation round-trip.
+	// The consent preflight refuses to add a second one on top of it.
+	confirmed := false
 	if confirmation := ctx.ToolConfirmation(); confirmation != nil {
 		if !confirmation.Confirmed {
 			return nil, fmt.Errorf("error tool %q %w", t.Name(), tool.ErrConfirmationRejected)
 		}
+		confirmed = true
 	} else {
 		requireConfirmation := t.requireConfirmation
 
@@ -133,7 +137,7 @@ func (t *mcpTool) Run(ctx agent.Context, args any) (map[string]any, error) {
 
 	// Before the metadata provider, so a call paused for consent does no other
 	// per-call work.
-	if err := t.consentPreflight(ctx); err != nil {
+	if err := t.consentPreflight(ctx, confirmed); err != nil {
 		return nil, err
 	}
 
@@ -197,7 +201,7 @@ func (t *mcpTool) Run(ctx agent.Context, args any) (map[string]any, error) {
 // auth.APIKey, a caching oauth2.TokenSource) pays nothing for that. One that
 // reaches a service on every call pays twice, and the GCP provider is one —
 // "Nothing is cached", auth/gcp's NewProvider doc.
-func (t *mcpTool) consentPreflight(ctx agent.Context) error {
+func (t *mcpTool) consentPreflight(ctx agent.Context, confirmed bool) error {
 	if t.auth == nil {
 		return nil
 	}
@@ -219,12 +223,14 @@ func (t *mcpTool) consentPreflight(ctx agent.Context) error {
 		// mint a credential. Asking again would loop.
 		return fmt.Errorf("mcp tool %q: consent completed but credential unavailable: %w", t.Name(), err)
 	}
-	if t.requireConfirmation || t.requireConfirmationProvider != nil {
+	if confirmed {
 		// Two human-in-the-loop round-trips on one call do not compose today.
 		// ADK emits the request event from the model-response path only, so the
 		// second one — whichever it is — is recorded and never reaches the
 		// client, leaving a run paused on a prompt nobody can answer. Report it
-		// rather than producing that state.
+		// rather than producing that state. Decided per call: a provider that
+		// declined confirmation for this call leaves consent as the only
+		// round-trip, which is fine.
 		return fmt.Errorf("mcp tool %q: interactive credential consent cannot be combined with "+
 			"tool confirmation on the same call; set one of Config.Auth's interactive provider or "+
 			"Config.RequireConfirmation", t.Name())
