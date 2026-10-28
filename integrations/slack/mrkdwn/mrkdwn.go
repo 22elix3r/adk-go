@@ -83,8 +83,8 @@ var (
 	// Slack's own tokens a model may echo back, by their ID shapes, so that
 	// <!DOCTYPE html> or an HTML comment is still escaped as plain text.
 	slackTokenRE = regexp.MustCompile(`<(?:[@#][A-Z0-9]+|!(?:here|channel|everyone|subteam\^[A-Z0-9]+|date\^[^|>\n]+))(?:\|[^>\n]*)?>|<(?:https?://|mailto:)[^>\n]*>`)
-	// Only http(s) targets become <url|text>; < > | would end the Slack link
-	// early, and a fragment like (#setup) would read as a channel token.
+	// Only http(s) targets without < > | become <url|text>. Anything else is
+	// left as written, so a fragment like (#setup) never becomes <#setup|…>.
 	linkRE = regexp.MustCompile(`\[([^\]\n]+)\]\((https?://[^)\s<>|]+)\)`)
 	// A URL must not end on a closing ** or ~~, nor on sentence punctuation,
 	// which can sit between the URL and that closing marker: **https://x.io**.
@@ -116,7 +116,8 @@ func renderLine(line string) string {
 	line = ph.take(slackTokenRE, line, func(s string) string { return s })
 	line = ph.take(linkRE, line, func(s string) string {
 		m := linkRE.FindStringSubmatch(s)
-		// Code or a token inside the label would put a raw > into the link.
+		// The label may hold code or token placeholders: expand them here so
+		// escape sees their text and no raw > reaches the link.
 		return "<" + m[2] + "|" + escape(ph.restore(m[1])) + ">"
 	})
 	line = ph.take(bareURLRE, line, func(s string) string { return s })
