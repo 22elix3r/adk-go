@@ -71,6 +71,8 @@ var renderTests = []struct{ name, in, want string }{
 	{"bold url before full stop", "Docs at **https://x.io**.", "Docs at *https://x.io*."},
 	{"bold url in parens", "(**https://x.io**)", "(*https://x.io*)"},
 	{"struck url before full stop", "~~https://x.io~~.", "~https://x.io~."},
+	{"bold url before punctuation", "**https://x.io**, **https://x.io**; **https://x.io**: **https://x.io**! **https://x.io**?", "*https://x.io*, *https://x.io*; *https://x.io*: *https://x.io*! *https://x.io*?"},
+	{"table at end of input", "| a |\n| b |", "```\n| a |\n| b |\n```"},
 }
 
 func TestRender(t *testing.T) {
