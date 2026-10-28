@@ -57,16 +57,15 @@ type StreamQueryRequest struct {
 // agent frameworks may require the session to exist first.
 func (c *Client) StreamQuery(ctx context.Context, req StreamQueryRequest) iter.Seq2[*Event, error] {
 	return func(yield func(*Event, error) bool) {
-		caller := ctx
 		// An abandoned GAPIC stream stays open until its ctx ends.
-		ctx, cancel := context.WithCancel(ctx)
+		streamCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		pbReq, err := encodeRequest(c.name, req)
 		if err != nil {
 			yield(nil, err)
 			return
 		}
-		stream, err := c.exec.StreamQueryReasoningEngine(ctx, pbReq)
+		stream, err := c.exec.StreamQueryReasoningEngine(streamCtx, pbReq)
 		if err != nil {
 			yield(nil, fmt.Errorf("agentengine: stream query %s: %w", c.name, err))
 			return
@@ -88,11 +87,11 @@ func (c *Client) StreamQuery(ctx context.Context, req StreamQueryRequest) iter.S
 		}
 		for ev, err := range decodeJSONL(chunks) {
 			// Lines already buffered from the last chunk would otherwise be
-			// delivered after the caller gave up. The caller's ctx, not the
-			// derived one: a derived ctx learns of a non-stdlib parent's end
+			// delivered after the caller gave up. Checked on ctx rather than
+			// streamCtx: a derived ctx learns of a non-stdlib parent's end
 			// through a goroutine and can lag it. Shaped like the error Recv
 			// returns for the same cause, so callers check one thing.
-			if cerr := caller.Err(); cerr != nil {
+			if cerr := ctx.Err(); cerr != nil {
 				yield(nil, fmt.Errorf("agentengine: stream query %s: %w", c.name, status.FromContextError(cerr).Err()))
 				return
 			}

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"iter"
 	"strings"
+	"unicode"
 
 	"google.golang.org/genai"
 )
@@ -29,7 +30,8 @@ import (
 // opposed to a transport or decoding error. Its message is the server's.
 var ErrRemote = errors.New("agentengine: remote error")
 
-// Event is one line of a stream-query response.
+// Event is one line of a stream-query response. It models the fields every
+// ADK runtime emits; Raw holds the rest.
 type Event struct {
 	Author string
 	// Content is nil for lines without a content object, which some agent
@@ -172,7 +174,7 @@ func snakeToCamel(s string) string {
 			continue
 		}
 		if upper {
-			r = []rune(strings.ToUpper(string(r)))[0]
+			r = unicode.ToUpper(r)
 			upper = false
 		}
 		b.WriteRune(r)
