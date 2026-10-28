@@ -47,17 +47,17 @@ type StreamQueryRequest struct {
 // point, and ranging the same iterator again runs another turn. The iterator
 // ends when the server closes the stream, when a remote error line arrives
 // (reported as the error), or when ctx is done. A done ctx is reported as a
-// gRPC status error with code Canceled or DeadlineExceeded, whether it ends
-// the open call, cuts the stream, or is noticed before a buffered event is
-// yielded. A buffered error line is still reported first. A ctx that ends as
-// the server closes the stream may or may not be reported, depending on
-// which arrives first. A server can end the RPC with those codes too, so
-// check ctx.Err() to tell the caller's own cancellation from a remote one.
+// gRPC status error with code Canceled or DeadlineExceeded, and nothing
+// received earlier is yielded after it. A ctx that ends as the server closes
+// the stream may or may not be reported, depending on which arrives first.
+// A server can end the RPC with those codes too, so check ctx.Err() to tell
+// the caller's own cancellation from a remote one.
 // Against an adk-go agent the session is created server-side on first use
 // with the given SessionID (the server runs with AutoCreateSession). Other
 // agent frameworks may require the session to exist first.
 func (c *Client) StreamQuery(ctx context.Context, req StreamQueryRequest) iter.Seq2[*Event, error] {
 	return func(yield func(*Event, error) bool) {
+		caller := ctx
 		// An abandoned GAPIC stream stays open until its ctx ends.
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -88,10 +88,12 @@ func (c *Client) StreamQuery(ctx context.Context, req StreamQueryRequest) iter.S
 		}
 		for ev, err := range decodeJSONL(chunks) {
 			// Lines already buffered from the last chunk would otherwise be
-			// delivered after the caller gave up. Shaped like the error Recv
+			// delivered after the caller gave up. The caller's ctx, not the
+			// derived one: a derived ctx learns of a non-stdlib parent's end
+			// through a goroutine and can lag it. Shaped like the error Recv
 			// returns for the same cause, so callers check one thing.
-			if ctxErr := ctx.Err(); ctxErr != nil && err == nil {
-				yield(nil, fmt.Errorf("agentengine: stream query %s: %w", c.name, status.FromContextError(ctxErr).Err()))
+			if cerr := caller.Err(); cerr != nil {
+				yield(nil, fmt.Errorf("agentengine: stream query %s: %w", c.name, status.FromContextError(cerr).Err()))
 				return
 			}
 			if !yield(ev, err) {

@@ -319,31 +319,71 @@ func TestStreamQueryContextDoneBeforeRange(t *testing.T) {
 	}
 }
 
-func TestStreamQueryDeadlineBetweenBufferedLines(t *testing.T) {
-	srv := &fakeExecServer{chunks: []string{lineA + lineB + lineC}, ctxDone: make(chan struct{})}
-	c := newFakeClient(t, srv)
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer cancel()
-	var got []*Event
-	var gotErr error
-	for ev, err := range c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}) {
-		if err != nil {
-			gotErr = err
-			break
-		}
-		got = append(got, ev)
-		<-ctx.Done() // let the deadline pass before the next buffered line
-	}
-	if diff := cmp.Diff([]string{"A"}, texts(got)); diff != "" {
-		t.Errorf("events after the deadline (-want +got):\n%s", diff)
-	}
-	if status.Code(gotErr) != codes.DeadlineExceeded {
-		t.Fatalf("error = %v, want status DeadlineExceeded", gotErr)
+// manualCtx is a context outside the context package, so a ctx derived from it
+// learns that it is done only through context's watcher goroutine. The test
+// decides when it ends, which also keeps the deadline case deterministic.
+type manualCtx struct {
+	context.Context
+	done chan struct{}
+	mu   sync.Mutex
+	err  error
+}
+
+func newManualCtx(parent context.Context) *manualCtx {
+	return &manualCtx{Context: parent, done: make(chan struct{})}
+}
+
+func (m *manualCtx) Done() <-chan struct{} { return m.done }
+
+func (m *manualCtx) Err() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.err
+}
+
+func (m *manualCtx) end(err error) {
+	m.mu.Lock()
+	m.err = err
+	m.mu.Unlock()
+	close(m.done)
+}
+
+func TestStreamQueryDoneBetweenBufferedLinesNonStdlibCtx(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		code codes.Code
+	}{
+		{"cancel", context.Canceled, codes.Canceled},
+		{"deadline", context.DeadlineExceeded, codes.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := &fakeExecServer{chunks: []string{lineA + lineB + lineC}, ctxDone: make(chan struct{})}
+			c := newFakeClient(t, srv)
+			ctx := newManualCtx(t.Context())
+			var got []*Event
+			var gotErr error
+			for ev, err := range c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}) {
+				if err != nil {
+					gotErr = err
+					break
+				}
+				got = append(got, ev)
+				ctx.end(tc.err)
+			}
+			if diff := cmp.Diff([]string{"A"}, texts(got)); diff != "" {
+				t.Errorf("events after ctx ended (-want +got):\n%s", diff)
+			}
+			if status.Code(gotErr) != tc.code {
+				t.Fatalf("error = %v, want status %v", gotErr, tc.code)
+			}
+		})
 	}
 }
 
-func TestStreamQueryCancelDoesNotMaskRemoteError(t *testing.T) {
-	// An error line that arrives next wins over a cancel that arrives later.
+func TestStreamQueryCancelWinsOverBufferedErrorLine(t *testing.T) {
+	// Once ctx is done nothing received earlier is yielded, an error line
+	// included.
 	srv := &fakeExecServer{chunks: []string{lineA + `{"error":"boom"}` + "\n"}}
 	c := newFakeClient(t, srv)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -356,8 +396,8 @@ func TestStreamQueryCancelDoesNotMaskRemoteError(t *testing.T) {
 		}
 		cancel()
 	}
-	if gotErr == nil || !strings.Contains(gotErr.Error(), "boom") {
-		t.Fatalf("error = %v, want the remote error", gotErr)
+	if status.Code(gotErr) != codes.Canceled || strings.Contains(gotErr.Error(), "boom") {
+		t.Fatalf("error = %v, want status Canceled without the remote error", gotErr)
 	}
 }
 
