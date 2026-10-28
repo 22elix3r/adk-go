@@ -77,9 +77,9 @@ var (
 	// links already in <url|text> form.
 	slackTokenRE = regexp.MustCompile(`<(?:[@#!][^>\n]*|https?://[^>\n]*)>`)
 	linkRE       = regexp.MustCompile(`\[([^\]\n]+)\]\(([^)\s]+)\)`)
-	// The last character excludes * and ~ so a URL does not swallow the
-	// closing ** or ~~ of bold or strike around it.
-	bareURLRE = regexp.MustCompile(`https?://[^\s<>]*[^\s<>*~]`)
+	// A URL must not end on a closing ** or ~~, nor on sentence punctuation,
+	// which can sit between the URL and that closing marker: **https://x.io**.
+	bareURLRE = regexp.MustCompile(`https?://[^\s<>]*[^\s<>*~.,;:!?)]`)
 	strikeRE  = regexp.MustCompile(`~~([^~\s](?:[^~\n]*?[^~\s])?)~~`)
 	boldRE    = regexp.MustCompile(`\*\*([^*\s](?:[^*\n]*?[^*\s])?)\*\*|__([^_\s](?:[^_\n]*?[^_\s])?)__`)
 	// A leading non-word char (or line start) keeps 2*3*4 from becoming italic.

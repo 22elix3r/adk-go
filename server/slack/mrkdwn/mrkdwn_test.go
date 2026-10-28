@@ -68,6 +68,9 @@ var renderTests = []struct{ name, in, want string }{
 	{"slack link untouched", "<https://x.io>", "<https://x.io>"},
 	{"heading inline code untouched", "## The `__init__` method", "*The `__init__` method*"},
 	{"heading url untouched", "## See https://x.io/__init__", "*See https://x.io/__init__*"},
+	{"bold url before full stop", "Docs at **https://x.io**.", "Docs at *https://x.io*."},
+	{"bold url in parens", "(**https://x.io**)", "(*https://x.io*)"},
+	{"struck url before full stop", "~~https://x.io~~.", "~https://x.io~."},
 }
 
 func TestRender(t *testing.T) {
