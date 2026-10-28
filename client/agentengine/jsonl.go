@@ -63,14 +63,18 @@ func decodeJSONL(chunks iter.Seq2[[]byte, error]) iter.Seq2[*Event, error] {
 				yield(nil, err)
 				return
 			}
+			// Only the new bytes can hold a newline; the retained partial
+			// line was already scanned.
+			scanned := len(buf)
 			buf = append(buf, chunk...)
 			for {
-				i := bytes.IndexByte(buf, '\n')
+				i := bytes.IndexByte(buf[scanned:], '\n')
 				if i < 0 {
 					break
 				}
-				line := buf[:i]
-				buf = buf[i+1:]
+				line := buf[:scanned+i]
+				buf = buf[scanned+i+1:]
+				scanned = 0
 				if !emit(line) {
 					return
 				}
@@ -85,6 +89,9 @@ func decodeLine(line []byte) (*Event, error) {
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return nil, fmt.Errorf("agentengine: decoding stream line: %w", err)
 	}
+	if raw == nil {
+		return nil, errors.New("agentengine: decoding stream line: not a JSON object")
+	}
 	if msg, ok := raw["error"]; ok {
 		return nil, errors.New("agentengine: remote error: " + fmt.Sprint(msg))
 	}
@@ -95,7 +102,7 @@ func decodeLine(line []byte) (*Event, error) {
 		// genai's JSON tags are camelCase, but servers emit snake_case keys,
 		// so normalize before decoding.
 		c = camelizeKeys(c)
-		stdBase64Parts(c)
+		stdBase64Fields(c)
 		b, err := json.Marshal(c)
 		if err != nil {
 			return nil, fmt.Errorf("agentengine: re-encoding content: %w", err)
@@ -162,34 +169,47 @@ func snakeToCamel(s string) string {
 	return b.String()
 }
 
-// stdBase64Parts rewrites the bytes fields of each part (inlineData.data and
-// thoughtSignature) to standard base64 in place. Pydantic emits bytes as
-// URL-safe base64, while encoding/json decodes []byte only from standard
-// base64, so a Python agent's value would otherwise fail the whole line.
+// stdBase64Fields rewrites every bytes field under content to standard
+// base64 in place: thoughtSignature, and data inside an inlineData object,
+// at any depth (a function response carries its own media parts). Pydantic
+// emits bytes as URL-safe base64, while encoding/json decodes []byte only
+// from standard base64, so a Python agent's value would otherwise fail the
+// whole line. User-data maps are skipped: they are shared with Event.Raw.
 // content must be a value returned by camelizeKeys, which the caller owns.
-func stdBase64Parts(content any) {
-	c, _ := content.(map[string]any)
-	parts, _ := c["parts"].([]any)
-	for _, p := range parts {
-		part, _ := p.(map[string]any)
-		if s, ok := part["thoughtSignature"].(string); ok {
-			part["thoughtSignature"] = stdBase64(s)
-		}
-		if blob, ok := part["inlineData"].(map[string]any); ok {
-			if s, ok := blob["data"].(string); ok {
-				blob["data"] = stdBase64(s)
+func stdBase64Fields(v any) {
+	switch v := v.(type) {
+	case map[string]any:
+		for k, val := range v {
+			if userKeyFields[k] {
+				continue
 			}
+			switch k {
+			case "thoughtSignature":
+				if s, ok := val.(string); ok {
+					v[k] = stdBase64(s)
+				}
+			case "inlineData":
+				if blob, ok := val.(map[string]any); ok {
+					if s, ok := blob["data"].(string); ok {
+						blob["data"] = stdBase64(s)
+					}
+				}
+			}
+			stdBase64Fields(val)
+		}
+	case []any:
+		for _, val := range v {
+			stdBase64Fields(val)
 		}
 	}
 }
 
 // stdBase64 converts URL-safe base64 to the standard alphabet and restores
-// padding. Strings without '-' or '_' are returned unchanged.
+// missing padding. Standard padded input is returned unchanged.
 func stdBase64(s string) string {
-	if !strings.ContainsAny(s, "-_") {
-		return s
+	if strings.ContainsAny(s, "-_") {
+		s = strings.NewReplacer("-", "+", "_", "/").Replace(s)
 	}
-	s = strings.NewReplacer("-", "+", "_", "/").Replace(s)
 	if r := len(s) % 4; r != 0 {
 		s += strings.Repeat("=", 4-r)
 	}

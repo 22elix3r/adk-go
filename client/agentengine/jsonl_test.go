@@ -15,8 +15,10 @@
 package agentengine
 
 import (
+	"encoding/json"
 	"errors"
 	"iter"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -52,6 +54,16 @@ const (
 	lineB = `{"author":"root","content":{"role":"model","parts":[{"text":"B"}]}}` + "\n"
 	lineC = `{"author":"root","content":{"role":"model","parts":[{"text":"C"}]},"partial":true}` + "\n"
 )
+
+// splitEvery cuts s into pieces of at most n bytes.
+func splitEvery(s string, n int) []string {
+	var out []string
+	for len(s) > n {
+		out = append(out, s[:n])
+		s = s[n:]
+	}
+	return append(out, s)
+}
 
 func texts(events []*Event) []string {
 	var out []string
@@ -118,6 +130,17 @@ func TestDecodeJSONL(t *testing.T) {
 			chunks:    chunksOf(lineA + "{not json\n"),
 			wantTexts: []string{"A"},
 			wantErr:   "decoding",
+		},
+		{
+			name:      "null line is an error",
+			chunks:    chunksOf(lineA + "null\n" + lineB),
+			wantTexts: []string{"A"},
+			wantErr:   "not a JSON object",
+		},
+		{
+			name:      "lines split into many small chunks",
+			chunks:    chunksOf(splitEvery(lineA+lineB+lineC, 7)...),
+			wantTexts: []string{"A", "B", "C"},
 		},
 		{
 			name:      "empty stream",
@@ -255,7 +278,8 @@ func TestDecodeJSONLPartFieldCasing(t *testing.T) {
 }
 
 func TestDecodeJSONLURLSafeBase64(t *testing.T) {
-	// Pydantic writes bytes as URL-safe base64, often unpadded.
+	// Pydantic writes bytes as padded URL-safe base64 (vertexai 2.6.0 emits
+	// "-_8=" for {0xfb, 0xff}); unpadded input is accepted as well.
 	tests := []struct {
 		name string
 		part string
@@ -267,14 +291,39 @@ func TestDecodeJSONLURLSafeBase64(t *testing.T) {
 			want: &genai.Part{InlineData: &genai.Blob{MIMEType: "application/octet-stream", Data: []byte{0xfb, 0xff, 0xfe}}},
 		},
 		{
+			name: "padded URL-safe thought signature",
+			part: `{"text":"x","thought_signature":"-_8="}`,
+			want: &genai.Part{Text: "x", ThoughtSignature: []byte{0xfb, 0xff}},
+		},
+		{
 			name: "unpadded URL-safe thought signature",
 			part: `{"text":"x","thought_signature":"-_8"}`,
 			want: &genai.Part{Text: "x", ThoughtSignature: []byte{0xfb, 0xff}},
 		},
 		{
+			name: "unpadded without URL-safe characters",
+			part: `{"text":"x","thought_signature":"AQ"}`,
+			want: &genai.Part{Text: "x", ThoughtSignature: []byte{1}},
+		},
+		{
 			name: "padded standard base64 is unchanged",
 			part: `{"text":"x","thought_signature":"+/8="}`,
 			want: &genai.Part{Text: "x", ThoughtSignature: []byte{0xfb, 0xff}},
+		},
+		{
+			// Captured from vertexai 2.6.0 AdkApp.async_stream_query for a
+			// FunctionResponse carrying a media part.
+			name: "media part inside a function response",
+			part: `{"function_response":{"parts":[{"inline_data":{"mime_type":"image/png","data":"-__-"}}],"name":"lookup","response":{"status_code":200}}}`,
+			want: &genai.Part{FunctionResponse: &genai.FunctionResponse{
+				Name: "lookup", Response: map[string]any{"status_code": float64(200)},
+				Parts: []*genai.FunctionResponsePart{{InlineData: &genai.FunctionResponseBlob{MIMEType: "image/png", Data: []byte{0xfb, 0xff, 0xfe}}}},
+			}},
+		},
+		{
+			name: "URL-safe-looking strings inside user data are left alone",
+			part: `{"function_response":{"name":"lookup","response":{"inlineData":{"data":"-__-"},"thoughtSignature":"-_8"}}}`,
+			want: &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: "lookup", Response: map[string]any{"inlineData": map[string]any{"data": "-__-"}, "thoughtSignature": "-_8"}}},
 		},
 	}
 	for _, tc := range tests {
@@ -286,6 +335,83 @@ func TestDecodeJSONLURLSafeBase64(t *testing.T) {
 			}
 			if diff := cmp.Diff([]*genai.Part{tc.want}, got[0].Content.Parts); diff != "" {
 				t.Errorf("Parts mismatch (-want +got):\n%s", diff)
+			}
+			// Raw shares the user-data maps with the decoded content and
+			// must still hold the line as written.
+			var want map[string]any
+			if err := json.Unmarshal([]byte(line), &want); err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(want, got[0].Raw); diff != "" {
+				t.Errorf("Raw mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// bytesPaths lists every []byte field reachable from genai.Content as a JSON
+// path, so the test below cannot fall behind the type.
+func bytesPaths(t reflect.Type, prefix []string, seen map[reflect.Type]bool) [][]string {
+	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice {
+		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
+			return [][]string{prefix}
+		}
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct || seen[t] {
+		return nil
+	}
+	seen[t] = true
+	defer delete(seen, t)
+	var out [][]string
+	for i := range t.NumField() {
+		f := t.Field(i)
+		tag := strings.Split(f.Tag.Get("json"), ",")[0]
+		if tag == "" || tag == "-" {
+			continue
+		}
+		path := append(append([]string(nil), prefix...), tag)
+		if f.Type.Kind() == reflect.Slice && f.Type.Elem().Kind() != reflect.Uint8 {
+			path = append(path, "[]")
+		}
+		out = append(out, bytesPaths(f.Type, path, seen)...)
+	}
+	return out
+}
+
+// nest builds the JSON value that places leaf at path.
+func nest(path []string, leaf any) any {
+	if len(path) == 0 {
+		return leaf
+	}
+	if path[0] == "[]" {
+		return []any{nest(path[1:], leaf)}
+	}
+	return map[string]any{path[0]: nest(path[1:], leaf)}
+}
+
+func TestDecodeJSONLURLSafeBase64EveryBytesField(t *testing.T) {
+	paths := bytesPaths(reflect.TypeOf(genai.Content{}), nil, map[reflect.Type]bool{})
+	if len(paths) < 3 {
+		t.Fatalf("found %d bytes paths under genai.Content, want at least 3: %v", len(paths), paths)
+	}
+	for _, path := range paths {
+		t.Run(strings.Join(path, "."), func(t *testing.T) {
+			content, err := json.Marshal(nest(path, "-__-"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			line := `{"author":"root","content":` + string(content) + `}` + "\n"
+			got, err := collect(t, decodeJSONL(chunksOf(line)))
+			if err != nil || len(got) != 1 {
+				t.Fatalf("decodeJSONL() = %d events, %v; want 1, nil", len(got), err)
+			}
+			back, err := json.Marshal(got[0].Content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(back), `"+//+"`) {
+				t.Errorf("decoded content %s does not carry the bytes fb ff fe", back)
 			}
 		})
 	}
