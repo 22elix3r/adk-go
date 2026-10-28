@@ -38,7 +38,8 @@ var renderTests = []struct{ name, in, want string }{
 	{"numbered unchanged", "1. one", "1. one"},
 	{"escape amp lt gt", "a & b < c > d", "a &amp; b &lt; c &gt; d"},
 	{"blockquote keeps marker", "> quoted **x**", "> quoted *x*"},
-	{"inline code untouched", "run `a **b** <c>` now", "run `a **b** <c>` now"},
+	{"inline code keeps markdown, escapes slack", "run `a **b** <c> & d` now", "run `a **b** &lt;c&gt; &amp; d` now"},
+	{"inline code mention escaped", "run `<@U1>` now", "run `&lt;@U1&gt;` now"},
 	{"slack mention untouched", "ask <@U123> or <#C9|general>", "ask <@U123> or <#C9|general>"},
 	{"star arithmetic not italic", "2*3*4", "2*3*4"},
 	{"lone stars not italic", "a * b * c", "a * b * c"},
@@ -87,8 +88,12 @@ var renderTests = []struct{ name, in, want string }{
 	{"link target with slack sigil not a link", "[t](!channel)", "[t](!channel)"},
 	{"link target with gt not a link", "[t](https://x.io/a>b)", "[t](https://x.io/a&gt;b)"},
 	{"link target with pipe not a link", "[docs](https://x.io/?q=a|b)", "[docs](https://x.io/?q=a|b)"},
-	{"link label code escaped", "[run `a>b`](https://x.io)", "<https://x.io|run `a&gt;b`>"},
-	{"double backtick code untouched", "`` `a < b` ``", "`` `a < b` ``"},
+	{"link label code escaped once", "[run `a>b`](https://x.io)", "<https://x.io|run `a&gt;b`>"},
+	{"link label mention escaped", "[<@U1>](https://x.io)", "<https://x.io|&lt;@U1&gt;>"},
+	{"link label emphasis dropped", "[**x**, *y* and ~~z~~](https://x.io)", "<https://x.io|x, y and z>"},
+	{"link label underscore bold dropped", "[__x__](https://x.io)", "<https://x.io|x>"},
+	{"link label bold in heading", "# [**x**](https://x.io)", "*<https://x.io|x>*"},
+	{"double backtick code escaped", "`` `a < b` ``", "`` `a &lt; b` ``"},
 	{"double backtick bold untouched", "`` `**x**` ``", "`` `**x**` ``"},
 	{"doctype escaped", "Add <!DOCTYPE html> first", "Add &lt;!DOCTYPE html&gt; first"},
 	{"html comment escaped", "<!-- note -->", "&lt;!-- note --&gt;"},
@@ -98,6 +103,9 @@ var renderTests = []struct{ name, in, want string }{
 	{"slack mailto link untouched", "<mailto:a@b.io|mail>", "<mailto:a@b.io|mail>"},
 	{"single pipe line before text is not a table", "| alone |\nnext", "| alone |\nnext"},
 	{"tab indented fence untouched", "\t```\n**x**\n\t```", "\t```\n**x**\n\t```"},
+	{"fence info string dropped", "```go\nx\n```", "```\nx\n```"},
+	{"indented fence info string dropped", "  ```json title\nx\n  ```", "  ```\nx\n  ```"},
+	{"four backtick fence kept", "````\nx\n````", "````\nx\n````"},
 }
 
 func TestRender(t *testing.T) {
@@ -132,9 +140,9 @@ func TestRenderNeverEmitsNUL(t *testing.T) {
 	}
 }
 
-func TestRenderFencedCodeUntouched(t *testing.T) {
+func TestRenderFencedCodeKeepsMarkdownEscapesSlack(t *testing.T) {
 	in := "before **b**\n```go\nx := a < b && **c**\n# not heading\n```\nafter **b**"
-	want := "before *b*\n```go\nx := a < b && **c**\n# not heading\n```\nafter *b*"
+	want := "before *b*\n```\nx := a &lt; b &amp;&amp; **c**\n# not heading\n```\nafter *b*"
 	if got := Render(in); got != want {
 		t.Errorf("got %q\nwant %q", got, want)
 	}
@@ -142,14 +150,15 @@ func TestRenderFencedCodeUntouched(t *testing.T) {
 
 func TestRenderUnclosedFenceCopiesToEnd(t *testing.T) {
 	in := "```\n**x**\n<y>"
-	if got := Render(in); got != in {
-		t.Errorf("got %q, want input unchanged", got)
+	want := "```\n**x**\n&lt;y&gt;"
+	if got := Render(in); got != want {
+		t.Errorf("got %q\nwant %q", got, want)
 	}
 }
 
 func TestRenderTableBecomesCodeBlock(t *testing.T) {
 	in := "intro\n| a | b |\n|---|---|\n| 1 & 2 | **x** |\noutro"
-	want := "intro\n```\n| a | b |\n|---|---|\n| 1 & 2 | **x** |\n```\noutro"
+	want := "intro\n```\n| a | b |\n|---|---|\n| 1 &amp; 2 | **x** |\n```\noutro"
 	if got := Render(in); got != want {
 		t.Errorf("got %q\nwant %q", got, want)
 	}

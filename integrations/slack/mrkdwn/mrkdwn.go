@@ -23,10 +23,11 @@ import (
 
 // Render converts the Markdown that models write into Slack mrkdwn. It is
 // line-oriented and deliberately not a full Markdown parser: fenced and inline
-// code are kept byte-for-byte, Markdown tables become a code block because
-// Slack has no tables, and everything else is rewritten with regular
-// expressions. Slack reads *bold*, _italic_, ~strike~, <url|text>, and needs
-// &, < and > escaped in plain text.
+// code keep their text, Markdown tables become a code block because Slack has
+// no tables, and everything else is rewritten with regular expressions. Slack
+// reads *bold*, _italic_, ~strike~, <url|text>, and needs &, < and > escaped
+// everywhere, code included. A fence's info string (```go) is dropped, since
+// Slack would show it as the first line of the block.
 //
 // Render is not a sanitizer: Slack tokens a model echoes (<@U…>, <#C…>,
 // <!here>, <!channel>, existing <url|label> links) and bare URLs pass through
@@ -41,22 +42,24 @@ func Render(md string) string {
 	for i := 0; i < len(in); {
 		switch {
 		case isFence(in[i]):
+			out = append(out, fence(in[i]))
 			j := i + 1
 			for j < len(in) && !isFence(in[j]) {
+				out = append(out, escape(in[j]))
 				j++
 			}
 			if j < len(in) {
-				j++ // keep the closing fence
+				out = append(out, fence(in[j]))
+				j++
 			}
-			out = append(out, in[i:j]...)
 			i = j
 		case isTableRow(in[i]) && i+1 < len(in) && isTableRow(in[i+1]):
 			j := i
+			out = append(out, "```")
 			for j < len(in) && isTableRow(in[j]) {
+				out = append(out, escape(in[j]))
 				j++
 			}
-			out = append(out, "```")
-			out = append(out, in[i:j]...)
 			out = append(out, "```")
 			i = j
 		default:
@@ -68,6 +71,13 @@ func Render(md string) string {
 }
 
 func isFence(s string) bool { return strings.HasPrefix(strings.TrimLeft(s, " \t"), "```") }
+
+// fence keeps a fence line's indentation and backticks and drops the rest.
+func fence(s string) string {
+	rest := strings.TrimLeft(s, " \t")
+	indent := s[:len(s)-len(rest)]
+	return indent + rest[:len(rest)-len(strings.TrimLeft(rest, "`"))]
+}
 
 func isTableRow(s string) bool {
 	t := strings.TrimSpace(s)
@@ -112,14 +122,16 @@ func renderLine(line string) string {
 	}
 
 	var ph placeholders
-	line = ph.take(inlineCodeRE, line, func(s string) string { return s })
-	line = ph.take(slackTokenRE, line, func(s string) string { return s })
+	// Code is escaped on the way out, so the link label below restores it
+	// after escaping its own text.
+	line = ph.take(inlineCodeRE, line, escape)
+	// Links go before Slack tokens, so a token in a label is still plain text
+	// when escape runs and no raw < or > reaches the link.
 	line = ph.take(linkRE, line, func(s string) string {
 		m := linkRE.FindStringSubmatch(s)
-		// The label may hold code or token placeholders: expand them here so
-		// escape sees their text and no raw > reaches the link.
-		return "<" + m[2] + "|" + escape(ph.restore(m[1])) + ">"
+		return "<" + m[2] + "|" + ph.restore(escape(plainLabel(m[1]))) + ">"
 	})
+	line = ph.take(slackTokenRE, line, func(s string) string { return s })
 	line = ph.take(bareURLRE, line, func(s string) string { return s })
 	line = escape(line)
 	line = strikeRE.ReplaceAllString(line, "~$1~")
@@ -154,6 +166,13 @@ func escape(s string) string {
 	s = strings.ReplaceAll(s, "&", "&amp;")
 	s = strings.ReplaceAll(s, "<", "&lt;")
 	return strings.ReplaceAll(s, ">", "&gt;")
+}
+
+// plainLabel drops emphasis markers: Slack shows a link label as plain text.
+func plainLabel(s string) string {
+	s = strikeRE.ReplaceAllString(s, "$1")
+	s = boldRE.ReplaceAllString(s, "${1}${2}${3}")
+	return italicRE.ReplaceAllString(s, "${1}${2}")
 }
 
 // placeholders swaps spans out of a line while other rewrites run, then puts
