@@ -77,9 +77,9 @@ var (
 	// links already in <url|text> form.
 	slackTokenRE = regexp.MustCompile(`<(?:[@#!][^>\n]*|https?://[^>\n]*)>`)
 	linkRE       = regexp.MustCompile(`\[([^\]\n]+)\]\(([^)\s]+)\)`)
-	// Stops before a placeholder marker, and ends on a character that is not
-	// trailing punctuation, so "**https://x.io**." keeps its stars and full stop.
-	bareURLRE = regexp.MustCompile(`https?://[^\s<>\x00]*[^\s<>\x00*~.,;:!?)]`)
+	// The last character excludes * and ~ so a URL does not swallow the
+	// closing ** or ~~ of bold or strike around it.
+	bareURLRE = regexp.MustCompile(`https?://[^\s<>]*[^\s<>*~]`)
 	strikeRE  = regexp.MustCompile(`~~([^~\s](?:[^~\n]*?[^~\s])?)~~`)
 	boldRE    = regexp.MustCompile(`\*\*([^*\s](?:[^*\n]*?[^*\s])?)\*\*|__([^_\s](?:[^_\n]*?[^_\s])?)__`)
 	// A leading non-word char (or line start) keeps 2*3*4 from becoming italic.
@@ -95,8 +95,7 @@ func renderLine(line string) string {
 	heading := false
 	if m := headingRE.FindStringSubmatch(line); m != nil {
 		heading = true
-		// The whole heading becomes bold, and Slack cannot nest bold.
-		line = boldRE.ReplaceAllString(m[1], "$1$2")
+		line = m[1]
 	} else {
 		line = bulletRE.ReplaceAllString(line, "${1}• ")
 	}
@@ -117,6 +116,10 @@ func renderLine(line string) string {
 		inner := m[1]
 		if inner == "" {
 			inner = m[2]
+		}
+		// The whole heading becomes bold, and Slack cannot nest bold.
+		if heading {
+			return inner
 		}
 		return "*" + inner + "*"
 	})

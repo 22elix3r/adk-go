@@ -66,6 +66,8 @@ var renderTests = []struct{ name, in, want string }{
 	{"slack special mention untouched", "tell <!here> now", "tell <!here> now"},
 	{"slack link with label untouched", "<https://x.io|label>", "<https://x.io|label>"},
 	{"slack link untouched", "<https://x.io>", "<https://x.io>"},
+	{"heading inline code untouched", "## The `__init__` method", "*The `__init__` method*"},
+	{"heading url untouched", "## See https://x.io/__init__", "*See https://x.io/__init__*"},
 }
 
 func TestRender(t *testing.T) {
@@ -81,9 +83,21 @@ func TestRender(t *testing.T) {
 // NUL is Render's internal placeholder marker, so any NUL in the output is a
 // placeholder that was never expanded.
 func TestRenderNeverEmitsNUL(t *testing.T) {
+	inputs := []string{
+		// The block-level tests below.
+		"before **b**\n```go\nx := a < b && **c**\n# not heading\n```\nafter **b**",
+		"```\n**x**\n<y>",
+		"intro\n| a | b |\n|---|---|\n| 1 & 2 | **x** |\noutro",
+		"| alone |",
+		"  ```\n**x**\n  ```",
+		"|\n|",
+	}
 	for _, tc := range renderTests {
-		if got := Render(tc.in); strings.ContainsRune(got, 0) {
-			t.Errorf("Render(%q) = %q, contains NUL", tc.in, got)
+		inputs = append(inputs, tc.in)
+	}
+	for _, in := range inputs {
+		if got := Render(in); strings.ContainsRune(got, 0) {
+			t.Errorf("Render(%q) = %q, contains NUL", in, got)
 		}
 	}
 }
