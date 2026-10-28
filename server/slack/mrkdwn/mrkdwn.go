@@ -26,7 +26,8 @@ import (
 // code are kept byte-for-byte, Markdown tables become a code block because
 // Slack has no tables, and everything else is rewritten with regular
 // expressions. Slack reads *bold*, _italic_, ~strike~, <url|text>, and needs
-// &, < and > escaped in plain text.
+// &, < and > escaped in plain text. The output is mrkdwn, not Markdown, so
+// rendering it a second time escapes it again: callers render once.
 func Render(md string) string {
 	// NUL is the placeholder marker below, so it must not occur in the input.
 	md = strings.ReplaceAll(md, "\x00", "")
@@ -72,12 +73,15 @@ var (
 	headingRE    = regexp.MustCompile(`^\s*#{1,6}\s+(.*?)\s*#*\s*$`)
 	bulletRE     = regexp.MustCompile(`^(\s*)[-*+]\s+`)
 	inlineCodeRE = regexp.MustCompile("`[^`\n]+`")
-	// Slack's own tokens a model may echo back: <@U…>, <#C…>, <!here>.
-	slackTokenRE = regexp.MustCompile(`<[@#!][^>\n]*>`)
+	// Slack's own tokens a model may echo back: <@U…>, <#C…>, <!here>, and
+	// links already in <url|text> form.
+	slackTokenRE = regexp.MustCompile(`<(?:[@#!][^>\n]*|https?://[^>\n]*)>`)
 	linkRE       = regexp.MustCompile(`\[([^\]\n]+)\]\(([^)\s]+)\)`)
-	bareURLRE    = regexp.MustCompile(`https?://[^\s<>]+`)
-	strikeRE     = regexp.MustCompile(`~~([^~\s](?:[^~\n]*?[^~\s])?)~~`)
-	boldRE       = regexp.MustCompile(`\*\*([^*\s](?:[^*\n]*?[^*\s])?)\*\*|__([^_\s](?:[^_\n]*?[^_\s])?)__`)
+	// Stops before a placeholder marker, and ends on a character that is not
+	// trailing punctuation, so "**https://x.io**." keeps its stars and full stop.
+	bareURLRE = regexp.MustCompile(`https?://[^\s<>\x00]*[^\s<>\x00*~.,;:!?)]`)
+	strikeRE  = regexp.MustCompile(`~~([^~\s](?:[^~\n]*?[^~\s])?)~~`)
+	boldRE    = regexp.MustCompile(`\*\*([^*\s](?:[^*\n]*?[^*\s])?)\*\*|__([^_\s](?:[^_\n]*?[^_\s])?)__`)
 	// A leading non-word char (or line start) keeps 2*3*4 from becoming italic.
 	italicRE = regexp.MustCompile(`(^|[^\w*])\*([^*\s](?:[^*\n]*?[^*\s])?)\*`)
 )
@@ -91,7 +95,8 @@ func renderLine(line string) string {
 	heading := false
 	if m := headingRE.FindStringSubmatch(line); m != nil {
 		heading = true
-		line = m[1]
+		// The whole heading becomes bold, and Slack cannot nest bold.
+		line = boldRE.ReplaceAllString(m[1], "$1$2")
 	} else {
 		line = bulletRE.ReplaceAllString(line, "${1}• ")
 	}
@@ -146,9 +151,15 @@ func (p *placeholders) take(re *regexp.Regexp, line string, render func(string) 
 
 var markerRE = regexp.MustCompile("\x00(\\d+)\x00")
 
+// A value can contain earlier markers (bold around inline code, say), so it
+// expands until none remain. Each pass removes a marker and no value contains
+// its own, so the loop ends.
 func (p *placeholders) restore(line string) string {
-	return markerRE.ReplaceAllStringFunc(line, func(m string) string {
-		i, _ := strconv.Atoi(m[1 : len(m)-1])
-		return p.vals[i]
-	})
+	for markerRE.MatchString(line) {
+		line = markerRE.ReplaceAllStringFunc(line, func(m string) string {
+			i, _ := strconv.Atoi(m[1 : len(m)-1])
+			return p.vals[i]
+		})
+	}
+	return line
 }
