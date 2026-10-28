@@ -35,94 +35,6 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-// fakeExecServer records the last request and replays scripted chunks.
-type fakeExecServer struct {
-	aiplatformpb.UnimplementedReasoningEngineExecutionServiceServer
-
-	mu      sync.Mutex
-	lastReq *aiplatformpb.StreamQueryReasoningEngineRequest
-	calls   int
-	chunks  []string
-	// received, when non-nil, is closed once the first request has arrived, so
-	// a test can act after the stream is open.
-	received chan struct{}
-	// block, when non-nil, makes the server wait before sending anything, so a
-	// test can cancel the client context mid-stream.
-	block chan struct{}
-	// ctxDone, when non-nil, makes the server hold the stream open after the
-	// scripted chunks and close ctxDone once the client cancels it.
-	ctxDone chan struct{}
-	err     error
-}
-
-func (f *fakeExecServer) StreamQueryReasoningEngine(req *aiplatformpb.StreamQueryReasoningEngineRequest, stream aiplatformpb.ReasoningEngineExecutionService_StreamQueryReasoningEngineServer) error {
-	f.mu.Lock()
-	f.lastReq = req
-	f.calls++
-	first := f.calls == 1
-	f.mu.Unlock()
-	if first && f.received != nil {
-		close(f.received)
-	}
-	if f.block != nil {
-		select {
-		case <-f.block:
-		case <-stream.Context().Done():
-			return stream.Context().Err()
-		}
-	}
-	for _, c := range f.chunks {
-		if err := stream.Send(&httpbody.HttpBody{ContentType: "application/json", Data: []byte(c)}); err != nil {
-			return err
-		}
-	}
-	if f.ctxDone != nil {
-		<-stream.Context().Done()
-		close(f.ctxDone)
-	}
-	return f.err
-}
-
-func (f *fakeExecServer) request() *aiplatformpb.StreamQueryReasoningEngineRequest {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.lastReq
-}
-
-func (f *fakeExecServer) callCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls
-}
-
-func newFakeClient(t *testing.T, srv *fakeExecServer) *Client {
-	t.Helper()
-	listener := bufconn.Listen(1024 * 1024)
-	server := grpc.NewServer()
-	aiplatformpb.RegisterReasoningEngineExecutionServiceServer(server, srv)
-	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(func() {
-		server.Stop()
-		_ = listener.Close()
-	})
-	conn, err := grpc.NewClient("passthrough:///bufnet",
-		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		t.Fatalf("grpc.NewClient() failed: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-
-	c, err := New(t.Context(), Config{Project: "p", Location: "us-central1", ReasoningEngine: "123"},
-		option.WithGRPCConn(conn), option.WithoutAuthentication())
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-	t.Cleanup(func() { _ = c.Close() })
-	return c
-}
-
 func TestStreamQueryRequestShape(t *testing.T) {
 	srv := &fakeExecServer{chunks: []string{lineA}}
 	c := newFakeClient(t, srv)
@@ -320,35 +232,6 @@ func TestStreamQueryContextDoneBeforeRange(t *testing.T) {
 	}
 }
 
-// manualCtx is a context outside the context package, so a ctx derived from it
-// learns that it is done only through context's watcher goroutine. The test
-// decides when it ends, which also keeps the deadline case deterministic.
-type manualCtx struct {
-	context.Context
-	done chan struct{}
-	mu   sync.Mutex
-	err  error
-}
-
-func newManualCtx(parent context.Context) *manualCtx {
-	return &manualCtx{Context: parent, done: make(chan struct{})}
-}
-
-func (m *manualCtx) Done() <-chan struct{} { return m.done }
-
-func (m *manualCtx) Err() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.err
-}
-
-func (m *manualCtx) end(err error) {
-	m.mu.Lock()
-	m.err = err
-	m.mu.Unlock()
-	close(m.done)
-}
-
 func TestStreamQueryDoneBetweenBufferedLinesNonStdlibCtx(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -480,4 +363,122 @@ func TestNewCallerEndpointOverridesRegional(t *testing.T) {
 	if diff := cmp.Diff([]string{"A"}, texts(events)); diff != "" {
 		t.Errorf("(-want +got):\n%s", diff)
 	}
+}
+
+// fakeExecServer records the last request and replays scripted chunks.
+type fakeExecServer struct {
+	aiplatformpb.UnimplementedReasoningEngineExecutionServiceServer
+
+	mu      sync.Mutex
+	lastReq *aiplatformpb.StreamQueryReasoningEngineRequest
+	calls   int
+	chunks  []string
+	// received, when non-nil, is closed once the first request has arrived, so
+	// a test can act after the stream is open.
+	received chan struct{}
+	// block, when non-nil, makes the server wait before sending anything, so a
+	// test can cancel the client context mid-stream.
+	block chan struct{}
+	// ctxDone, when non-nil, makes the server hold the stream open after the
+	// scripted chunks and close ctxDone once the client cancels it.
+	ctxDone chan struct{}
+	err     error
+}
+
+func (f *fakeExecServer) StreamQueryReasoningEngine(req *aiplatformpb.StreamQueryReasoningEngineRequest, stream aiplatformpb.ReasoningEngineExecutionService_StreamQueryReasoningEngineServer) error {
+	f.mu.Lock()
+	f.lastReq = req
+	f.calls++
+	first := f.calls == 1
+	f.mu.Unlock()
+	if first && f.received != nil {
+		close(f.received)
+	}
+	if f.block != nil {
+		select {
+		case <-f.block:
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		}
+	}
+	for _, c := range f.chunks {
+		if err := stream.Send(&httpbody.HttpBody{ContentType: "application/json", Data: []byte(c)}); err != nil {
+			return err
+		}
+	}
+	if f.ctxDone != nil {
+		<-stream.Context().Done()
+		close(f.ctxDone)
+	}
+	return f.err
+}
+
+func (f *fakeExecServer) request() *aiplatformpb.StreamQueryReasoningEngineRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastReq
+}
+
+func (f *fakeExecServer) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// newFakeClient serves srv over bufconn and returns a Client dialed to it.
+func newFakeClient(t *testing.T, srv *fakeExecServer) *Client {
+	t.Helper()
+	listener := bufconn.Listen(1024 * 1024)
+	server := grpc.NewServer()
+	aiplatformpb.RegisterReasoningEngineExecutionServiceServer(server, srv)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+	})
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	c, err := New(t.Context(), Config{Project: "p", Location: "us-central1", ReasoningEngine: "123"},
+		option.WithGRPCConn(conn), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// manualCtx is a context outside the context package, so a ctx derived from it
+// learns that it is done only through context's watcher goroutine. The test
+// decides when it ends, which also keeps the deadline case deterministic.
+type manualCtx struct {
+	context.Context
+	done chan struct{}
+	mu   sync.Mutex
+	err  error
+}
+
+func newManualCtx(parent context.Context) *manualCtx {
+	return &manualCtx{Context: parent, done: make(chan struct{})}
+}
+
+func (m *manualCtx) Done() <-chan struct{} { return m.done }
+
+func (m *manualCtx) Err() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.err
+}
+
+func (m *manualCtx) end(err error) {
+	m.mu.Lock()
+	m.err = err
+	m.mu.Unlock()
+	close(m.done)
 }

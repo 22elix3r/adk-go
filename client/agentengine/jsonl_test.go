@@ -26,56 +26,11 @@ import (
 	"google.golang.org/genai"
 )
 
-// chunksOf yields the given byte slices in order, then stops.
-func chunksOf(parts ...string) iter.Seq2[[]byte, error] {
-	return func(yield func([]byte, error) bool) {
-		for _, p := range parts {
-			if !yield([]byte(p), nil) {
-				return
-			}
-		}
-	}
-}
-
-func collect(t *testing.T, events iter.Seq2[*Event, error]) ([]*Event, error) {
-	t.Helper()
-	var got []*Event
-	for ev, err := range events {
-		if err != nil {
-			return got, err
-		}
-		got = append(got, ev)
-	}
-	return got, nil
-}
-
 const (
 	lineA = `{"author":"root","content":{"role":"model","parts":[{"text":"A"}]},"partial":false}` + "\n"
 	lineB = `{"author":"root","content":{"role":"model","parts":[{"text":"B"}]}}` + "\n"
 	lineC = `{"author":"root","content":{"role":"model","parts":[{"text":"C"}]},"partial":true}` + "\n"
 )
-
-// splitEvery cuts s into pieces of at most n bytes.
-func splitEvery(s string, n int) []string {
-	var out []string
-	for len(s) > n {
-		out = append(out, s[:n])
-		s = s[n:]
-	}
-	return append(out, s)
-}
-
-func texts(events []*Event) []string {
-	var out []string
-	for _, ev := range events {
-		if ev.Content == nil {
-			out = append(out, "<nil>")
-			continue
-		}
-		out = append(out, ev.Content.Parts[0].Text)
-	}
-	return out
-}
 
 func TestDecodeJSONL(t *testing.T) {
 	tests := []struct {
@@ -369,8 +324,83 @@ func TestDecodeJSONLURLSafeBase64(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONLURLSafeBase64EveryBytesField(t *testing.T) {
+	paths := bytesPaths(reflect.TypeOf(genai.Content{}), nil, map[reflect.Type]bool{})
+	if len(paths) < 3 {
+		t.Fatalf("found %d bytes paths under genai.Content, want at least 3: %v", len(paths), paths)
+	}
+	for _, path := range paths {
+		t.Run(strings.Join(path, "."), func(t *testing.T) {
+			content, err := json.Marshal(nest(path, "-__-"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			line := `{"author":"root","content":` + string(content) + `}` + "\n"
+			got, err := collect(t, decodeJSONL(chunksOf(line)))
+			if err != nil || len(got) != 1 {
+				t.Fatalf("decodeJSONL() = %d events, %v; want 1, nil", len(got), err)
+			}
+			back, err := json.Marshal(got[0].Content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(back), `"+//+"`) {
+				t.Errorf("decoded content %s does not carry the bytes fb ff fe", back)
+			}
+		})
+	}
+}
+
+// chunksOf yields the given byte slices in order, then stops.
+func chunksOf(parts ...string) iter.Seq2[[]byte, error] {
+	return func(yield func([]byte, error) bool) {
+		for _, p := range parts {
+			if !yield([]byte(p), nil) {
+				return
+			}
+		}
+	}
+}
+
+// collect drains events and returns what arrived before the first error.
+func collect(t *testing.T, events iter.Seq2[*Event, error]) ([]*Event, error) {
+	t.Helper()
+	var got []*Event
+	for ev, err := range events {
+		if err != nil {
+			return got, err
+		}
+		got = append(got, ev)
+	}
+	return got, nil
+}
+
+// splitEvery cuts s into pieces of at most n bytes.
+func splitEvery(s string, n int) []string {
+	var out []string
+	for len(s) > n {
+		out = append(out, s[:n])
+		s = s[n:]
+	}
+	return append(out, s)
+}
+
+// texts returns each event's first part text, or "<nil>" without content.
+func texts(events []*Event) []string {
+	var out []string
+	for _, ev := range events {
+		if ev.Content == nil {
+			out = append(out, "<nil>")
+			continue
+		}
+		out = append(out, ev.Content.Parts[0].Text)
+	}
+	return out
+}
+
 // bytesPaths lists every []byte field reachable from genai.Content as a JSON
-// path, so the test below cannot fall behind the type.
+// path, so TestDecodeJSONLURLSafeBase64EveryBytesField cannot fall behind the
+// type.
 func bytesPaths(t reflect.Type, prefix []string, seen map[reflect.Type]bool) [][]string {
 	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice {
 		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
@@ -408,31 +438,4 @@ func nest(path []string, leaf any) any {
 		return []any{nest(path[1:], leaf)}
 	}
 	return map[string]any{path[0]: nest(path[1:], leaf)}
-}
-
-func TestDecodeJSONLURLSafeBase64EveryBytesField(t *testing.T) {
-	paths := bytesPaths(reflect.TypeOf(genai.Content{}), nil, map[reflect.Type]bool{})
-	if len(paths) < 3 {
-		t.Fatalf("found %d bytes paths under genai.Content, want at least 3: %v", len(paths), paths)
-	}
-	for _, path := range paths {
-		t.Run(strings.Join(path, "."), func(t *testing.T) {
-			content, err := json.Marshal(nest(path, "-__-"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			line := `{"author":"root","content":` + string(content) + `}` + "\n"
-			got, err := collect(t, decodeJSONL(chunksOf(line)))
-			if err != nil || len(got) != 1 {
-				t.Fatalf("decodeJSONL() = %d events, %v; want 1, nil", len(got), err)
-			}
-			back, err := json.Marshal(got[0].Content)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(string(back), `"+//+"`) {
-				t.Errorf("decoded content %s does not carry the bytes fb ff fe", back)
-			}
-		})
-	}
 }
