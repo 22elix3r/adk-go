@@ -571,9 +571,9 @@ func TestAuthHTTPClientRedirectCap(t *testing.T) {
 	if !strings.Contains(err.Error(), "stopped after") {
 		t.Errorf("Get() error = %v, want it to report the redirect cap", err)
 	}
-	// The literal, not maxRedirects: an expectation derived from the constant
-	// under test shrinks and grows with it, so the test can never fire on a
-	// change to the cap. 10 is net/http's own default, which a custom
+	// The literal, not credredirect.MaxRedirects: an expectation derived from
+	// the constant under test shrinks and grows with it, so the test can never
+	// fire on a change to the cap. 10 is net/http's own default, which a custom
 	// CheckRedirect replaces rather than extends.
 	if got := hits.Load(); got != 10 {
 		t.Errorf("server saw %d requests, want %d", got, 10)

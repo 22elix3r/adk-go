@@ -16,7 +16,6 @@
 package mcptoolset
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -159,12 +158,20 @@ func authCheckRedirect(next func(*http.Request, []*http.Request) error) func(*ht
 		if err := credredirect.Check(req, via); err != nil {
 			return fmt.Errorf("mcptoolset: %w: Config.Auth is set and the credential would follow", err)
 		}
-		if next != nil {
-			return next(req, via)
+		if next == nil {
+			if len(via) >= credredirect.MaxRedirects {
+				return fmt.Errorf("mcptoolset: stopped after %d redirects", credredirect.MaxRedirects)
+			}
+			return nil
 		}
-		// net/http's default cap, which a non-nil CheckRedirect replaces.
-		if len(via) >= 10 {
-			return errors.New("stopped after 10 redirects")
+		// net/http sends req as next leaves it, and next can edit via too, so
+		// judge the hop again against copies taken before next ran.
+		orig, prev := *via[0].URL, *via[len(via)-1].URL
+		if err := next(req, via); err != nil {
+			return err
+		}
+		if err := credredirect.Check(req, []*http.Request{{URL: &orig}, {URL: &prev}}); err != nil {
+			return fmt.Errorf("mcptoolset: %w: Config.Auth is set and the credential would follow", err)
 		}
 		return nil
 	}

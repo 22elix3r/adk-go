@@ -19,10 +19,10 @@ import (
 	"testing"
 )
 
-// TestSameTarget covers which redirects may carry the credential,
-// across the scheme and port combinations the end-to-end redirect tests above
-// do not reach: an upgrade to https, default ports written out or left
-// implicit, and schemes that are neither http nor https.
+// TestSameTarget covers which redirects may carry the credential, across the
+// scheme and port combinations which the end-to-end tests in mcptoolset and
+// remoteagent/v2 do not reach: an upgrade to https, default ports written out
+// or left implicit, and schemes that are neither http nor https.
 func TestSameTarget(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -59,8 +59,8 @@ func TestSameTarget(t *testing.T) {
 			if err != nil {
 				t.Fatalf("url.Parse(%q) error = %v", tc.to, err)
 			}
-			if got := SameTarget(from, to); got != tc.want {
-				t.Errorf("SameTarget(%q, %q) = %v, want %v", tc.from, tc.to, got, tc.want)
+			if got := sameTarget(from, to); got != tc.want {
+				t.Errorf("sameTarget(%q, %q) = %v, want %v", tc.from, tc.to, got, tc.want)
 			}
 		})
 	}

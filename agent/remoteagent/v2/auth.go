@@ -535,10 +535,6 @@ func mintAccessToken(ts oauth2.TokenSource) (string, error) {
 // timeout a2aclient would otherwise have applied.
 const a2aRequestTimeout = 3 * time.Minute
 
-// maxRedirects matches net/http's default cap, which a custom CheckRedirect
-// replaces rather than extends.
-const maxRedirects = 10
-
 // authHTTPClient is the HTTP client used when Auth is set. It refuses a
 // redirect that leaves the card's host or downgrades its scheme, because the
 // transport applies the credential again on every hop, so nothing else bounds
@@ -568,8 +564,8 @@ func cardFetchHTTPClient(rpc *http.Client) *http.Client {
 // replaces net/http's default rather than extending it, so the hop cap is here
 // too.
 func checkRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) >= maxRedirects {
-		return fmt.Errorf("remoteagent: stopped after %d redirects", maxRedirects)
+	if len(via) >= credredirect.MaxRedirects {
+		return fmt.Errorf("remoteagent: stopped after %d redirects", credredirect.MaxRedirects)
 	}
 	if err := credredirect.Check(req, via); err != nil {
 		return fmt.Errorf("remoteagent: %w: A2AConfig.Auth is set and the credential would follow", err)

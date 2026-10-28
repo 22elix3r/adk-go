@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package credredirect is the redirect policy for an HTTP client whose
+// Package credredirect implements the redirect policy for an HTTP client whose
 // transport applies a credential on every request. Such a transport runs below
 // the layer where net/http strips Authorization on a cross-host redirect, so the
 // client's CheckRedirect is the only thing bounding where the credential
@@ -26,6 +26,11 @@ import (
 	"strings"
 )
 
+// MaxRedirects is net/http's default cap on requests per redirect chain, which
+// a non-nil CheckRedirect replaces rather than extends. Check does not apply
+// it, because one caller applies it conditionally.
+const MaxRedirects = 10
+
 // Check refuses a redirect that leaves the original request's host or
 // downgrades its scheme. It does not cap the number of hops.
 func Check(req *http.Request, via []*http.Request) error {
@@ -35,18 +40,18 @@ func Check(req *http.Request, via []*http.Request) error {
 	// climbing to https and then dropping back to http, which the original
 	// alone would accept.
 	for _, from := range []*url.URL{via[0].URL, via[len(via)-1].URL} {
-		if !SameTarget(from, req.URL) {
+		if !sameTarget(from, req.URL) {
 			return fmt.Errorf("refusing redirect from %s to %s", origin(from), origin(req.URL))
 		}
 	}
 	return nil
 }
 
-// SameTarget reports whether it is safe to replay the credential on a
+// sameTarget reports whether it is safe to replay the credential on a
 // redirect from one URL to the other: the host must be identical, and the
 // scheme may only stay the same or be upgraded from http to https, which
 // strictly improves confidentiality.
-func SameTarget(from, to *url.URL) bool {
+func sameTarget(from, to *url.URL) bool {
 	if !strings.EqualFold(from.Hostname(), to.Hostname()) {
 		return false
 	}
