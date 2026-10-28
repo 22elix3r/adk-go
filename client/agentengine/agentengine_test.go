@@ -14,7 +14,10 @@
 
 package agentengine
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestResourceName(t *testing.T) {
 	tests := []struct {
@@ -22,7 +25,7 @@ func TestResourceName(t *testing.T) {
 		cfg          Config
 		wantName     string
 		wantLocation string
-		wantErr      bool
+		wantErr      string // substring; "" means no error
 	}{
 		{
 			name:         "triple form",
@@ -42,17 +45,28 @@ func TestResourceName(t *testing.T) {
 			wantName:     "projects/p/locations/europe-west1/reasoningEngines/456",
 			wantLocation: "europe-west1",
 		},
-		{name: "missing project", cfg: Config{Location: "l", ReasoningEngine: "r"}, wantErr: true},
-		{name: "missing location", cfg: Config{Project: "p", ReasoningEngine: "r"}, wantErr: true},
-		{name: "missing engine", cfg: Config{Project: "p", Location: "l"}, wantErr: true},
-		{name: "malformed full name", cfg: Config{Name: "reasoningEngines/456"}, wantErr: true},
-		{name: "empty", cfg: Config{}, wantErr: true},
+		{name: "missing project", cfg: Config{Location: "l", ReasoningEngine: "r"}, wantErr: "required"},
+		{name: "missing location", cfg: Config{Project: "p", ReasoningEngine: "r"}, wantErr: "required"},
+		{name: "missing engine", cfg: Config{Project: "p", Location: "l"}, wantErr: "required"},
+		{name: "malformed full name", cfg: Config{Name: "reasoningEngines/456"}, wantErr: "valid segments"},
+		{name: "empty", cfg: Config{}, wantErr: "required"},
+		// The location becomes the endpoint host, so anything that could
+		// change the dial target is rejected.
+		{name: "host and port in location", cfg: Config{Name: "projects/p/locations/127.0.0.1:443#/reasoningEngines/1"}, wantErr: "valid segments"},
+		{name: "query marker in location", cfg: Config{Name: "projects/p/locations/us-central1?/reasoningEngines/1"}, wantErr: "valid segments"},
+		{name: "uppercase location", cfg: Config{Project: "p", Location: "US-Central1", ReasoningEngine: "1"}, wantErr: "valid segments"},
+		{name: "space in triple location", cfg: Config{Project: "p", Location: "us-central1 ", ReasoningEngine: "1"}, wantErr: "valid segments"},
+		{name: "full name passed as engine", cfg: Config{Project: "p", Location: "us-central1", ReasoningEngine: "projects/p/locations/us-central1/reasoningEngines/1"}, wantErr: "valid segments"},
+		{name: "slash in project", cfg: Config{Project: "p/q", Location: "us-central1", ReasoningEngine: "1"}, wantErr: "valid segments"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			gotName, gotLocation, err := resourceName(tc.cfg)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("resourceName(%+v) error = %v, wantErr %v", tc.cfg, err, tc.wantErr)
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("resourceName(%+v) error = %v, want nil", tc.cfg, err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("resourceName(%+v) error = %v, want containing %q", tc.cfg, err, tc.wantErr)
 			}
 			if gotName != tc.wantName || gotLocation != tc.wantLocation {
 				t.Errorf("resourceName(%+v) = (%q, %q), want (%q, %q)", tc.cfg, gotName, gotLocation, tc.wantName, tc.wantLocation)

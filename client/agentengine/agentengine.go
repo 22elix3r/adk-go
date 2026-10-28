@@ -14,8 +14,8 @@
 
 // Package agentengine calls an agent deployed on Vertex AI Agent Runtime
 // (a reasoning engine) through its stream-query method and exposes the
-// resulting events as an iterator. It knows nothing about any chat surface.
-// The Slack ingress is one consumer, a plain CLI is another.
+// resulting events as an iterator. It knows nothing about any chat surface,
+// so a chat ingress and a plain CLI can share it.
 package agentengine
 
 import (
@@ -31,7 +31,9 @@ import (
 )
 
 // Config identifies the reasoning engine to call. Either set Name, or set
-// Project, Location and ReasoningEngine. Name wins when both are set.
+// Project, Location and ReasoningEngine. Name wins when both are set. Each
+// segment is validated: the location picks the host the client dials, so it
+// may contain only lowercase letters, digits and '-'.
 type Config struct {
 	Project         string
 	Location        string
@@ -49,23 +51,27 @@ type Client struct {
 	exec *aiplatform.ReasoningEngineExecutionClient
 }
 
-var fullNameRE = regexp.MustCompile(`^projects/([^/]+)/locations/([^/]+)/reasoningEngines/([^/]+)$`)
+// The location is concatenated into the endpoint host, so its character set
+// is the narrow one. Project and engine IDs only have to be a single path
+// segment.
+var fullNameRE = regexp.MustCompile(`^projects/([A-Za-z0-9._-]+)/locations/([a-z0-9-]+)/reasoningEngines/([A-Za-z0-9._-]+)$`)
 
 // resourceName resolves cfg to a full resource name and the location that
 // picks the regional aiplatform endpoint.
 func resourceName(cfg Config) (name, location string, err error) {
-	if cfg.Name != "" {
-		m := fullNameRE.FindStringSubmatch(cfg.Name)
-		if m == nil {
-			return "", "", fmt.Errorf("agentengine: Name %q is not projects/{p}/locations/{l}/reasoningEngines/{id}", cfg.Name)
+	name = cfg.Name
+	if name == "" {
+		if cfg.Project == "" || cfg.Location == "" || cfg.ReasoningEngine == "" {
+			return "", "", fmt.Errorf("agentengine: Project, Location and ReasoningEngine are required when Name is empty (got %q, %q, %q)", cfg.Project, cfg.Location, cfg.ReasoningEngine)
 		}
-		return cfg.Name, m[2], nil
+		data := &vertexaiutil.AgentEngineData{ProjectID: cfg.Project, Location: cfg.Location, ReasoningEngine: cfg.ReasoningEngine}
+		name = vertexaiutil.AgentEngineResource(data)
 	}
-	if cfg.Project == "" || cfg.Location == "" || cfg.ReasoningEngine == "" {
-		return "", "", fmt.Errorf("agentengine: Project, Location and ReasoningEngine are required when Name is empty (got %q, %q, %q)", cfg.Project, cfg.Location, cfg.ReasoningEngine)
+	m := fullNameRE.FindStringSubmatch(name)
+	if m == nil {
+		return "", "", fmt.Errorf("agentengine: resource name %q is not projects/{p}/locations/{l}/reasoningEngines/{id} with valid segments", name)
 	}
-	data := &vertexaiutil.AgentEngineData{ProjectID: cfg.Project, Location: cfg.Location, ReasoningEngine: cfg.ReasoningEngine}
-	return vertexaiutil.AgentEngineResource(data), cfg.Location, nil
+	return name, m[2], nil
 }
 
 // New creates a client for the reasoning engine described by cfg. Credentials
