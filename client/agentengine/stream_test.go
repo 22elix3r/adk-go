@@ -16,6 +16,7 @@ package agentengine
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -40,7 +41,11 @@ type fakeExecServer struct {
 
 	mu      sync.Mutex
 	lastReq *aiplatformpb.StreamQueryReasoningEngineRequest
+	calls   int
 	chunks  []string
+	// received, when non-nil, is closed once the first request has arrived, so
+	// a test can act after the stream is open.
+	received chan struct{}
 	// block, when non-nil, makes the server wait before sending anything, so a
 	// test can cancel the client context mid-stream.
 	block chan struct{}
@@ -53,7 +58,12 @@ type fakeExecServer struct {
 func (f *fakeExecServer) StreamQueryReasoningEngine(req *aiplatformpb.StreamQueryReasoningEngineRequest, stream aiplatformpb.ReasoningEngineExecutionService_StreamQueryReasoningEngineServer) error {
 	f.mu.Lock()
 	f.lastReq = req
+	f.calls++
+	first := f.calls == 1
 	f.mu.Unlock()
+	if first && f.received != nil {
+		close(f.received)
+	}
 	if f.block != nil {
 		select {
 		case <-f.block:
@@ -77,6 +87,12 @@ func (f *fakeExecServer) request() *aiplatformpb.StreamQueryReasoningEngineReque
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastReq
+}
+
+func (f *fakeExecServer) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 func newFakeClient(t *testing.T, srv *fakeExecServer) *Client {
@@ -111,7 +127,13 @@ func TestStreamQueryRequestShape(t *testing.T) {
 	srv := &fakeExecServer{chunks: []string{lineA}}
 	c := newFakeClient(t, srv)
 
-	msg := genai.NewContentFromText("hello", genai.RoleUser)
+	// Keys must be genai's camelCase and bytes standard base64: that is what
+	// the server decodes into genai.Content.
+	msg := &genai.Content{Role: "user", Parts: []*genai.Part{
+		{Text: "hello"},
+		{InlineData: &genai.Blob{MIMEType: "image/png", Data: []byte{0xfb, 0xff, 0xfe}}},
+		{FunctionResponse: &genai.FunctionResponse{Name: "lookup", Response: map[string]any{"status_code": 200.0}}},
+	}}
 	events, err := collect(t, c.StreamQuery(t.Context(), StreamQueryRequest{UserID: "u1", SessionID: "s1", Message: msg}))
 	if err != nil || len(events) != 1 {
 		t.Fatalf("StreamQuery() = %d events, %v; want 1, nil", len(events), err)
@@ -121,6 +143,9 @@ func TestStreamQueryRequestShape(t *testing.T) {
 	if req.GetName() != "projects/p/locations/us-central1/reasoningEngines/123" {
 		t.Errorf("Name = %q", req.GetName())
 	}
+	if c.Name() != req.GetName() {
+		t.Errorf("Client.Name() = %q, want %q", c.Name(), req.GetName())
+	}
 	if req.GetClassMethod() != "async_stream_query" {
 		t.Errorf("ClassMethod = %q, want async_stream_query", req.GetClassMethod())
 	}
@@ -128,9 +153,36 @@ func TestStreamQueryRequestShape(t *testing.T) {
 	if in["user_id"] != "u1" || in["session_id"] != "s1" {
 		t.Errorf("input ids = %v / %v", in["user_id"], in["session_id"])
 	}
-	wantMsg := map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}
+	wantMsg := map[string]any{"role": "user", "parts": []any{
+		map[string]any{"text": "hello"},
+		map[string]any{"inlineData": map[string]any{"mimeType": "image/png", "data": "+//+"}},
+		map[string]any{"functionResponse": map[string]any{"name": "lookup", "response": map[string]any{"status_code": 200.0}}},
+	}}
 	if diff := cmp.Diff(wantMsg, in["message"]); diff != "" {
 		t.Errorf("input.message mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestStreamQueryRangeIssuesOneTurnEach(t *testing.T) {
+	srv := &fakeExecServer{chunks: []string{lineA}}
+	c := newFakeClient(t, srv)
+	msg := genai.NewContentFromText("first", genai.RoleUser)
+	events := c.StreamQuery(t.Context(), StreamQueryRequest{UserID: "u", SessionID: "s", Message: msg})
+	if srv.callCount() != 0 {
+		t.Fatalf("StreamQuery() issued the RPC before the iterator was ranged")
+	}
+	msg.Parts[0].Text = "second"
+	for range 2 {
+		if _, err := collect(t, events); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := srv.callCount(); got != 2 {
+		t.Errorf("ranging twice issued %d RPCs, want 2", got)
+	}
+	sent := srv.request().GetInput().AsMap()["message"].(map[string]any)["parts"].([]any)[0].(map[string]any)["text"]
+	if sent != "second" {
+		t.Errorf("message read at range time = %q, want second", sent)
 	}
 }
 
@@ -187,7 +239,7 @@ func TestStreamQueryEmptyStream(t *testing.T) {
 }
 
 func TestStreamQueryCancelledContext(t *testing.T) {
-	srv := &fakeExecServer{block: make(chan struct{}), chunks: []string{lineA}}
+	srv := &fakeExecServer{block: make(chan struct{}), received: make(chan struct{}), chunks: []string{lineA}}
 	c := newFakeClient(t, srv)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -195,13 +247,68 @@ func TestStreamQueryCancelledContext(t *testing.T) {
 		_, err := collect(t, c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}))
 		done <- err
 	}()
+	// Cancel only once the stream is open, so the Recv path is the one cut.
+	select {
+	case <-srv.received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server never received the request")
+	}
 	cancel()
-	err := <-done
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("StreamQuery() did not return after cancel")
+	}
 	if err == nil {
 		t.Fatal("StreamQuery() error = nil after cancel, want cancellation")
 	}
 	if status.Code(err) != codes.Canceled && !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("error = %v, want cancellation", err)
+	}
+}
+
+func TestStreamQueryCancelDoesNotMaskRemoteError(t *testing.T) {
+	// An error the server already sent wins over a cancel that arrives later.
+	srv := &fakeExecServer{chunks: []string{lineA + `{"error":"boom"}` + "\n"}}
+	c := newFakeClient(t, srv)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var gotErr error
+	for _, err := range c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}) {
+		if err != nil {
+			gotErr = err
+			break
+		}
+		cancel()
+	}
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "boom") {
+		t.Fatalf("error = %v, want the remote error", gotErr)
+	}
+}
+
+func TestStreamQueryCancelledBetweenBufferedLines(t *testing.T) {
+	// Three lines arrive in one chunk and the server finishes at once, so no
+	// Recv is left to report the cancellation: the client has to notice it.
+	srv := &fakeExecServer{chunks: []string{lineA + lineB + lineC}}
+	c := newFakeClient(t, srv)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var got []*Event
+	var gotErr error
+	for ev, err := range c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}) {
+		if err != nil {
+			gotErr = err
+			break
+		}
+		got = append(got, ev)
+		cancel()
+	}
+	if diff := cmp.Diff([]string{"A"}, texts(got)); diff != "" {
+		t.Errorf("events after cancel (-want +got):\n%s", diff)
+	}
+	if !errors.Is(gotErr, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", gotErr)
 	}
 }
 

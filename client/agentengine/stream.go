@@ -40,9 +40,13 @@ type StreamQueryRequest struct {
 	ClassMethod string
 }
 
-// StreamQuery runs one turn against the reasoning engine and yields its
-// events in order. The iterator ends when the server closes the stream, when
-// a remote error line arrives (reported as the error), or when ctx is done.
+// StreamQuery returns an iterator that runs one turn against the reasoning
+// engine and yields its events in order. The RPC is issued when the iterator
+// is ranged, not when StreamQuery is called: req.Message is read at that
+// point, and ranging the same iterator again runs another turn. The iterator
+// ends when the server closes the stream, when a remote error line arrives
+// (reported as the error), or when ctx is done (reported as ctx's error, even
+// if the server had already finished).
 // Against an adk-go agent the session is created server-side on first use
 // with the given SessionID (the server runs with AutoCreateSession). Other
 // agent frameworks may require the session to exist first.
@@ -77,6 +81,12 @@ func (c *Client) StreamQuery(ctx context.Context, req StreamQueryRequest) iter.S
 			}
 		}
 		for ev, err := range decodeJSONL(chunks) {
+			// Lines already buffered from the last chunk would otherwise be
+			// delivered after the caller gave up.
+			if ctxErr := ctx.Err(); ctxErr != nil && err == nil {
+				yield(nil, fmt.Errorf("agentengine: stream query %s: %w", c.name, ctxErr))
+				return
+			}
 			if !yield(ev, err) {
 				return
 			}
