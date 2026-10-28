@@ -52,9 +52,9 @@ type Client struct {
 }
 
 // The location is concatenated into the endpoint host, so its character set
-// is the narrow one. Project and engine IDs only have to be a single path
-// segment.
-var fullNameRE = regexp.MustCompile(`^projects/([A-Za-z0-9._-]+)/locations/([a-z0-9-]+)/reasoningEngines/([A-Za-z0-9._-]+)$`)
+// is narrow. Project and engine IDs only have to be one path segment: a
+// project may be domain-scoped, like google.com:my-proj.
+var fullNameRE = regexp.MustCompile(`^projects/([^/]+)/locations/([a-z0-9-]+)/reasoningEngines/([^/]+)$`)
 
 // resourceName resolves cfg to a full resource name and the location that
 // picks the regional aiplatform endpoint.

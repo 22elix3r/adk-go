@@ -58,6 +58,18 @@ func TestResourceName(t *testing.T) {
 		{name: "space in triple location", cfg: Config{Project: "p", Location: "us-central1 ", ReasoningEngine: "1"}, wantErr: "valid segments"},
 		{name: "full name passed as engine", cfg: Config{Project: "p", Location: "us-central1", ReasoningEngine: "projects/p/locations/us-central1/reasoningEngines/1"}, wantErr: "valid segments"},
 		{name: "slash in project", cfg: Config{Project: "p/q", Location: "us-central1", ReasoningEngine: "1"}, wantErr: "valid segments"},
+		{
+			name:         "domain-scoped project",
+			cfg:          Config{Project: "google.com:my-proj", Location: "us-central1", ReasoningEngine: "1"},
+			wantName:     "projects/google.com:my-proj/locations/us-central1/reasoningEngines/1",
+			wantLocation: "us-central1",
+		},
+		{
+			name:         "domain-scoped project in full name",
+			cfg:          Config{Name: "projects/google.com:my-proj/locations/us-central1/reasoningEngines/1"},
+			wantName:     "projects/google.com:my-proj/locations/us-central1/reasoningEngines/1",
+			wantLocation: "us-central1",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
