@@ -16,7 +16,6 @@ package agentengine
 
 import (
 	"context"
-	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -260,16 +259,43 @@ func TestStreamQueryCancelledContext(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("StreamQuery() did not return after cancel")
 	}
-	if err == nil {
-		t.Fatal("StreamQuery() error = nil after cancel, want cancellation")
+	if status.Code(err) != codes.Canceled {
+		t.Fatalf("error = %v, want status Canceled", err)
 	}
-	if status.Code(err) != codes.Canceled && !strings.Contains(err.Error(), "context canceled") {
-		t.Fatalf("error = %v, want cancellation", err)
+}
+
+func TestStreamQueryCancelAfterFinalEventEndsClean(t *testing.T) {
+	srv := &fakeExecServer{chunks: []string{lineA}}
+	c := newFakeClient(t, srv)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var got []*Event
+	for ev, err := range c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}) {
+		if err != nil {
+			t.Fatalf("error after the final event = %v, want nil", err)
+		}
+		got = append(got, ev)
+		cancel()
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d events, want 1", len(got))
+	}
+}
+
+func TestStreamQueryDeadlineInRecv(t *testing.T) {
+	srv := &fakeExecServer{block: make(chan struct{}), received: make(chan struct{}), chunks: []string{lineA}}
+	defer close(srv.block)
+	c := newFakeClient(t, srv)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := collect(t, c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}))
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("error = %v, want status DeadlineExceeded", err)
 	}
 }
 
 func TestStreamQueryCancelDoesNotMaskRemoteError(t *testing.T) {
-	// An error the server already sent wins over a cancel that arrives later.
+	// An error line that arrives next wins over a cancel that arrives later.
 	srv := &fakeExecServer{chunks: []string{lineA + `{"error":"boom"}` + "\n"}}
 	c := newFakeClient(t, srv)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -307,8 +333,8 @@ func TestStreamQueryCancelledBetweenBufferedLines(t *testing.T) {
 	if diff := cmp.Diff([]string{"A"}, texts(got)); diff != "" {
 		t.Errorf("events after cancel (-want +got):\n%s", diff)
 	}
-	if !errors.Is(gotErr, context.Canceled) {
-		t.Fatalf("error = %v, want context.Canceled", gotErr)
+	if status.Code(gotErr) != codes.Canceled {
+		t.Fatalf("error = %v, want status Canceled", gotErr)
 	}
 }
 

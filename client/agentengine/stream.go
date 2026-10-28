@@ -24,6 +24,7 @@ import (
 
 	"cloud.google.com/go/aiplatform/apiv1beta1/aiplatformpb"
 	"google.golang.org/genai"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -45,8 +46,11 @@ type StreamQueryRequest struct {
 // is ranged, not when StreamQuery is called: req.Message is read at that
 // point, and ranging the same iterator again runs another turn. The iterator
 // ends when the server closes the stream, when a remote error line arrives
-// (reported as the error), or when ctx is done (reported as ctx's error, even
-// if the server had already finished).
+// (reported as the error), or when ctx is done. A done ctx is reported as a
+// gRPC status error with code Canceled or DeadlineExceeded, whether it cuts
+// the stream or is noticed before a line already received is yielded, so
+// status.Code tells it apart from a remote failure. A ctx that ends after the
+// final event is not reported.
 // Against an adk-go agent the session is created server-side on first use
 // with the given SessionID (the server runs with AutoCreateSession). Other
 // agent frameworks may require the session to exist first.
@@ -82,9 +86,10 @@ func (c *Client) StreamQuery(ctx context.Context, req StreamQueryRequest) iter.S
 		}
 		for ev, err := range decodeJSONL(chunks) {
 			// Lines already buffered from the last chunk would otherwise be
-			// delivered after the caller gave up.
+			// delivered after the caller gave up. Shaped like the error Recv
+			// returns for the same cause, so callers check one thing.
 			if ctxErr := ctx.Err(); ctxErr != nil && err == nil {
-				yield(nil, fmt.Errorf("agentengine: stream query %s: %w", c.name, ctxErr))
+				yield(nil, fmt.Errorf("agentengine: stream query %s: %w", c.name, status.FromContextError(ctxErr).Err()))
 				return
 			}
 			if !yield(ev, err) {
