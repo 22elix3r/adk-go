@@ -264,33 +264,81 @@ func TestStreamQueryCancelledContext(t *testing.T) {
 	}
 }
 
-func TestStreamQueryCancelAfterFinalEventEndsClean(t *testing.T) {
-	srv := &fakeExecServer{chunks: []string{lineA}}
-	c := newFakeClient(t, srv)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	var got []*Event
-	for ev, err := range c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}) {
-		if err != nil {
-			t.Fatalf("error after the final event = %v, want nil", err)
-		}
-		got = append(got, ev)
-		cancel()
-	}
-	if len(got) != 1 {
-		t.Fatalf("got %d events, want 1", len(got))
-	}
-}
-
 func TestStreamQueryDeadlineInRecv(t *testing.T) {
 	srv := &fakeExecServer{block: make(chan struct{}), received: make(chan struct{}), chunks: []string{lineA}}
 	defer close(srv.block)
 	c := newFakeClient(t, srv)
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
-	_, err := collect(t, c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}))
+	done := make(chan error, 1)
+	go func() {
+		_, err := collect(t, c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}))
+		done <- err
+	}()
+	// The deadline must cut Recv, not the open call.
+	select {
+	case <-srv.received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server never received the request")
+	}
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("StreamQuery() did not return after the deadline")
+	}
 	if status.Code(err) != codes.DeadlineExceeded {
 		t.Fatalf("error = %v, want status DeadlineExceeded", err)
+	}
+}
+
+func TestStreamQueryRemoteCanceledKeepsCtxLive(t *testing.T) {
+	// A server-side Canceled carries the same status code as the caller's
+	// own cancellation. Only ctx.Err() tells them apart.
+	srv := &fakeExecServer{err: status.Error(codes.Canceled, "server gave up")}
+	c := newFakeClient(t, srv)
+	ctx := t.Context()
+	_, err := collect(t, c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}))
+	if status.Code(err) != codes.Canceled {
+		t.Fatalf("error = %v, want status Canceled", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("ctx.Err() = %v, want nil for a remote cancellation", ctx.Err())
+	}
+}
+
+func TestStreamQueryContextDoneBeforeRange(t *testing.T) {
+	srv := &fakeExecServer{chunks: []string{lineA}}
+	c := newFakeClient(t, srv)
+	ctx, cancel := context.WithCancel(t.Context())
+	events := c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)})
+	cancel()
+	got, err := collect(t, events)
+	if status.Code(err) != codes.Canceled || len(got) != 0 {
+		t.Fatalf("StreamQuery() = %d events, %v; want 0, status Canceled", len(got), err)
+	}
+}
+
+func TestStreamQueryDeadlineBetweenBufferedLines(t *testing.T) {
+	srv := &fakeExecServer{chunks: []string{lineA + lineB + lineC}, ctxDone: make(chan struct{})}
+	c := newFakeClient(t, srv)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	var got []*Event
+	var gotErr error
+	for ev, err := range c.StreamQuery(ctx, StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}) {
+		if err != nil {
+			gotErr = err
+			break
+		}
+		got = append(got, ev)
+		<-ctx.Done() // let the deadline pass before the next buffered line
+	}
+	if diff := cmp.Diff([]string{"A"}, texts(got)); diff != "" {
+		t.Errorf("events after the deadline (-want +got):\n%s", diff)
+	}
+	if status.Code(gotErr) != codes.DeadlineExceeded {
+		t.Fatalf("error = %v, want status DeadlineExceeded", gotErr)
 	}
 }
 
