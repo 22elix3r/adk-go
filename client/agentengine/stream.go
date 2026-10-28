@@ -46,12 +46,12 @@ type StreamQueryRequest struct {
 // is ranged, not when StreamQuery is called: req.Message is read at that
 // point, and ranging the same iterator again runs another turn. The iterator
 // ends when the server closes the stream, when a remote error line arrives
-// (reported as the error), or when ctx is done. A done ctx is reported as a
-// gRPC status error with code Canceled or DeadlineExceeded, and nothing
-// received earlier is yielded after it. A ctx that ends as the server closes
-// the stream may or may not be reported, depending on which arrives first.
-// A server can end the RPC with those codes too, so check ctx.Err() to tell
-// the caller's own cancellation from a remote one.
+// (reported as an ErrRemote error), or when ctx is done. A done ctx is
+// reported as a gRPC status error with code Canceled or DeadlineExceeded,
+// and nothing received earlier is yielded after it. A ctx that ends as the
+// server closes the stream may or may not be reported, depending on which
+// arrives first. A server can end the RPC with those codes too, so check
+// ctx.Err() to tell the caller's own cancellation from a remote one.
 // Against an adk-go agent the session is created server-side on first use
 // with the given SessionID (the server runs with AutoCreateSession). Other
 // agent frameworks may require the session to exist first.

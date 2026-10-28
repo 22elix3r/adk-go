@@ -192,6 +192,26 @@ func TestDecodeJSONLNullContent(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONLErrorFields(t *testing.T) {
+	// Both runtimes report a failed model call as an ordinary event with
+	// snake_case error fields and no content, not as an error line.
+	line := `{"author":"root","error_code":"SAFETY","error_message":"blocked"}` + "\n"
+	got, err := collect(t, decodeJSONL(chunksOf(line)))
+	if err != nil || len(got) != 1 {
+		t.Fatalf("decodeJSONL() = %d events, %v; want 1, nil", len(got), err)
+	}
+	if got[0].ErrorCode != "SAFETY" || got[0].ErrorMessage != "blocked" || got[0].Content != nil {
+		t.Errorf("Event = %+v, want ErrorCode SAFETY, ErrorMessage blocked, nil Content", got[0])
+	}
+}
+
+func TestDecodeJSONLRemoteErrorIsErrRemote(t *testing.T) {
+	_, err := collect(t, decodeJSONL(chunksOf(`{"error":"model quota"}`+"\n")))
+	if !errors.Is(err, ErrRemote) || !strings.Contains(err.Error(), "model quota") {
+		t.Fatalf("error = %v, want ErrRemote carrying the server message", err)
+	}
+}
+
 func TestDecodeJSONLPropagatesChunkError(t *testing.T) {
 	boom := errors.New("transport broke")
 	chunks := func(yield func([]byte, error) bool) {

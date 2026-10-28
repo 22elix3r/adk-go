@@ -25,6 +25,10 @@ import (
 	"google.golang.org/genai"
 )
 
+// ErrRemote marks a failure the agent reported in the stream itself, as
+// opposed to a transport or decoding error. Its message is the server's.
+var ErrRemote = errors.New("agentengine: remote error")
+
 // Event is one line of a stream-query response.
 type Event struct {
 	Author string
@@ -35,14 +39,19 @@ type Event struct {
 	// by one aggregated non-partial event carrying the full content, so
 	// consumers that want each reply once skip partial events.
 	Partial bool
+	// ErrorCode and ErrorMessage are set when the model call behind this
+	// event failed (a safety block, a malformed function call). Such an event
+	// is a regular line, not a remote error, and usually has no Content.
+	ErrorCode    string
+	ErrorMessage string
 	// Raw is the whole decoded line, for fields this type does not model.
 	Raw map[string]any
 }
 
 // decodeJSONL reassembles JSONL across chunk boundaries and decodes each line.
 // The server writes one JSON object per line and reports failure as a line
-// {"error": "..."}, which becomes the iterator's error and ends the stream.
-// A final line without a trailing newline is still decoded.
+// {"error": "..."}, which becomes the iterator's ErrRemote error and ends the
+// stream. A final line without a trailing newline is still decoded.
 func decodeJSONL(chunks iter.Seq2[[]byte, error]) iter.Seq2[*Event, error] {
 	return func(yield func(*Event, error) bool) {
 		var buf []byte
@@ -93,11 +102,13 @@ func decodeLine(line []byte) (*Event, error) {
 		return nil, errors.New("agentengine: decoding stream line: not a JSON object")
 	}
 	if msg, ok := raw["error"]; ok {
-		return nil, errors.New("agentengine: remote error: " + fmt.Sprint(msg))
+		return nil, fmt.Errorf("%w: %v", ErrRemote, msg)
 	}
 	ev := &Event{Raw: raw}
 	ev.Author, _ = raw["author"].(string)
 	ev.Partial, _ = raw["partial"].(bool)
+	ev.ErrorCode, _ = raw["error_code"].(string)
+	ev.ErrorMessage, _ = raw["error_message"].(string)
 	if c, ok := raw["content"]; ok && c != nil {
 		// genai's JSON tags are camelCase, but servers emit snake_case keys,
 		// so normalize before decoding.

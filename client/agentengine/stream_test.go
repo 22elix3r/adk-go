@@ -16,6 +16,7 @@ package agentengine
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -212,8 +213,8 @@ func TestStreamQueryRemoteErrorLine(t *testing.T) {
 	srv := &fakeExecServer{chunks: []string{lineA + `{"error":"model quota"}` + "\n"}}
 	c := newFakeClient(t, srv)
 	events, err := collect(t, c.StreamQuery(t.Context(), StreamQueryRequest{UserID: "u", SessionID: "s", Message: genai.NewContentFromText("x", genai.RoleUser)}))
-	if err == nil || !strings.Contains(err.Error(), "model quota") {
-		t.Fatalf("error = %v, want remote error", err)
+	if !errors.Is(err, ErrRemote) || !strings.Contains(err.Error(), "model quota") {
+		t.Fatalf("error = %v, want ErrRemote carrying the server message", err)
 	}
 	if len(events) != 1 {
 		t.Errorf("got %d events before the error, want 1", len(events))
