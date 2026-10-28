@@ -1,11 +1,17 @@
 # Slack integration for ADK Go
 
-Module `google.golang.org/adk/integrations/slack`. A separate Go module, like
-`plugin/agentanalytics`, so the core `google.golang.org/adk/v2` module carries
-no Slack code or dependencies.
+Go module `google.golang.org/adk/integrations/slack`: Slack-specific packages
+for agents built with [ADK Go](https://github.com/google/adk-go). It is a
+separate module from `google.golang.org/adk/v2`, so add it to your `go.mod` on
+its own:
 
-Status: in progress. Packages land one pull request at a time:
+```sh
+go get google.golang.org/adk/integrations/slack
+```
 
-- `mrkdwn` — converts the Markdown that models write into Slack mrkdwn. Available.
-- the Slack service (Events API transport, answer policy, delivery), its `web`
-  sublauncher, Socket Mode, and the Agent Runtime backend — upcoming.
+## Packages
+
+- `mrkdwn` converts the Markdown that models write into Slack mrkdwn (bold,
+  italic, strikethrough, headings, lists, links, code and the `& < >` escaping
+  Slack requires), so a reply posted through the Slack API renders as intended
+  instead of showing literal asterisks.

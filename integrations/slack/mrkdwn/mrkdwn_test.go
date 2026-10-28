@@ -89,7 +89,7 @@ func TestRender(t *testing.T) {
 // placeholder that was never expanded.
 func TestRenderNeverEmitsNUL(t *testing.T) {
 	inputs := []string{
-		// The block-level tests below.
+		// Inputs of the block-level tests in this file.
 		"before **b**\n```go\nx := a < b && **c**\n# not heading\n```\nafter **b**",
 		"```\n**x**\n<y>",
 		"intro\n| a | b |\n|---|---|\n| 1 & 2 | **x** |\noutro",
